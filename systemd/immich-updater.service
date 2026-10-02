@@ -1,0 +1,13 @@
+[Unit]
+Description=Update Immich after a seven-day release delay
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+StateDirectory=immich-updater
+UMask=0077
+Environment=IMMICH_DIR=/opt/immich
+WorkingDirectory=/opt/immich-updater
+ExecStart=/usr/bin/flock -n /var/lib/immich-updater/update.lock /opt/immich-updater/.venv/bin/python /opt/immich-updater/immich_updater.py --immich-dir ${IMMICH_DIR} --verbose
+TimeoutStartSec=30min

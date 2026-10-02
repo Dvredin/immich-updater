@@ -1,30 +1,83 @@
 # Immich Updater
 
-Simple and dumb Immich server updater.
+A small fork of [dpantel/immich-updater](https://github.com/dpantel/immich-updater) for delayed Docker Compose updates.
 
-Compares the current server version with the version of the latest release on Github. If there has been a major version update **OR** the release notes say "breaking change" (case-insensitive) anywhere, then it aborts. Otherwise, if there has been a version change, will do `docker pull`, `docker compose up -d`.
+## Behaviour
 
-## Limitations
-
-This script is **DUMB**!
-
-It's literally looking for a string in the release notes.
-
-Also, this script only looks at the notes of the LATEST release. That means that it needs to be run often (daily? weekly?) to make sure that it does not miss a "breaking change" release between runs.
-
-## Installation & Running
-
-1. Copy the script to a location of your choice. I recommend `/etc/cron.daily/` or `/etc/cron.weekly/` so that it runs on a schedule (see Limitations).
-   - remember to take the extension off the file name, or the script will not be executed.
-1. Edit variables at the top of the script to suit your needs:
-   - `IMMICH_DIR` is the location of your Immich docker-compose.yml.
-   - `DELAY_DAYS` allows you to wait some days after a new release, before updating.
-1. Make it executable.
-
-If there is nothing to do, there is no output. Anything else prints messages to STDOUT.
+- Check the latest stable Immich release on GitHub.
+- Wait **seven full days after its publication** before installing it. A newer release starts a new waiting period; the script does not select an older release instead.
+- Pass the exact checked version to both `docker compose pull` and `docker compose up -d`.
+- After a successful pull, save the selected `IMMICH_VERSION` in the stack's `.env`. This keeps later manual Compose commands on the installed version.
+- Preserve the other `.env` settings and its ownership/permissions. Keep a mode-0600 backup named `.env.before-immich-updater-*` in the stack directory.
+- Do not automatically cross a major-version boundary, install a prerelease, or downgrade.
+- Keep the upstream breaking-change guard. `--dry-run` never changes files or Docker.
 
 ## Requirements
 
-- Python v3.8+
-- Python [sh](https://github.com/amoffat/sh) module v2+
-- Docker compose
+- Python 3.9 or newer, Linux
+- Docker Compose
+- An existing working Immich Compose stack with a regular `.env` file
+- Permission to run Docker and write the stack directory and `.env`
+
+Install the Python dependencies in a virtual environment:
+
+```bash
+git clone https://github.com/Dvredin/immich-updater.git
+cd immich-updater
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+```
+
+Check your instance without changing it:
+
+```bash
+.venv/bin/python immich_updater.py --immich-dir /opt/immich --dry-run
+```
+
+Run an eligible update:
+
+```bash
+.venv/bin/python immich_updater.py --immich-dir /opt/immich --verbose
+```
+
+The local API defaults to `http://localhost:2283`. Use `--server-url URL` if needed. Set `DELAY_DAYS` in the script if a different waiting period is desired.
+
+## Daily systemd timer
+
+The example units assume the updater checkout and its virtual environment live at `/opt/immich-updater`, and the Compose stack is `/opt/immich`. Adapt those paths before installation. The service uses a lock to prevent overlapping scheduled/manual service runs, has a 30-minute timeout, and runs as root for Docker access. Do not run a second updater for the same stack.
+
+```bash
+sudo install -m 0644 systemd/immich-updater.service /etc/systemd/system/
+sudo install -m 0644 systemd/immich-updater.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now immich-updater.timer
+systemctl list-timers immich-updater.timer
+```
+
+The timer checks daily at **09:35 in the server's timezone**. `Persistent=true` catches up after downtime. It enables the timer, not an immediate forced upgrade. Read its results with:
+
+```bash
+journalctl -u immich-updater.service
+```
+
+## Safety and limitations
+
+The breaking-change check is inherited from upstream: it searches the latest release notes for the text `breaking change` when moving to another minor version. It can miss warnings in intermediate releases. A detected warning writes a `BREAKING_CHANGE` flag that blocks later automatic runs. After a reviewed manual update, remove that flag yourself.
+
+This script does **not** update Compose definitions, migrate PostgreSQL, back up the database/media, or guarantee that an eligible release is bug-free. Maintain a separate, tested Immich backup process and read the [official upgrade instructions](https://docs.immich.app/install/upgrading/). A `.env` backup is not a database backup. Those files can contain credentials; keep them private and never commit them.
+
+A failed pull leaves `.env` unchanged and does not restart containers. If startup fails after a successful pull, the selected version remains pinned; automatic downgrade is deliberately avoided because Immich does not support it. The script logs the command failure but does not perform a post-start health check or send notifications.
+
+## Tests
+
+```bash
+.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python -m compileall -q immich_updater.py tests
+git diff --check
+```
+
+The regression tests use explicitly simulated HTTP replies and a recording Docker stub; they do not update a real server.
+
+## License
+
+MIT, retaining the original copyright notice in [LICENSE](LICENSE).

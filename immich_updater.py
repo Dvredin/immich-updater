@@ -14,9 +14,13 @@ that it needs to be run often (daily? weekly?) to make sure that it does not
 miss a "breaking change" release between runs.
 """
 
+import argparse
+import os
 import re
+import stat
 import sys
-from datetime import datetime, timezone
+import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import requests
 import sh
@@ -32,9 +36,53 @@ BREAKING_CHANGE_FLAG = 'BREAKING_CHANGE'
 
 # How many days do you want to wait after the latest release before you
 # update to it? (Allows the initial kinks to get worked out.)
-DELAY_DAYS = 3
+DELAY_DAYS = 7
 
 ############################
+
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--immich-dir', default=IMMICH_DIR)
+parser.add_argument('--server-url', default='http://localhost:2283')
+parser.add_argument('--dry-run', action='store_true',
+                    help='Check the release without changing files or Docker.')
+parser.add_argument('--verbose', action='store_true')
+args = parser.parse_args()
+IMMICH_DIR = args.immich_dir
+
+
+def persist_version(tag):
+    """Pin the selected version; keep a private backup of the existing .env."""
+    env_path = Path(IMMICH_DIR, '.env')
+    if env_path.is_symlink() or not env_path.is_file():
+        raise ValueError('A regular .env file is required in the Immich directory.')
+    metadata = env_path.stat()
+    original = env_path.read_bytes()
+    text = original.decode('utf-8')
+    pattern = r'^(?:export[ \t]+)?IMMICH_VERSION[ \t]*=.*$'
+    if re.search(pattern, text, re.MULTILINE):
+        updated = re.sub(pattern, f'IMMICH_VERSION={tag}', text,
+                         flags=re.MULTILINE)
+    else:
+        updated = text + ('' if not text or text.endswith('\n') else '\n')
+        updated += f'IMMICH_VERSION={tag}\n'
+    if updated.encode('utf-8') == original:
+        return
+    fd, _ = tempfile.mkstemp(prefix='.env.before-immich-updater-',
+                             dir=IMMICH_DIR)
+    with os.fdopen(fd, 'wb') as backup:
+        backup.write(original)
+    fd, temporary = tempfile.mkstemp(prefix='.env.immich-updater-',
+                                     dir=IMMICH_DIR)
+    try:
+        with os.fdopen(fd, 'wb') as output:
+            os.fchown(output.fileno(), metadata.st_uid, metadata.st_gid)
+            os.fchmod(output.fileno(), stat.S_IMODE(metadata.st_mode))
+            output.write(updated.encode('utf-8'))
+        os.replace(temporary, env_path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def err(err_obj: sh.ErrorReturnCode):
@@ -57,7 +105,8 @@ if BCF.is_file():
 
 # Retrieve currently-install version from the API.
 # JSON dictionary object with 'major', 'minor', and 'patch' keys.
-r = requests.get('http://localhost:2283/api/server/version', timeout=30)
+r = requests.get(args.server_url.rstrip('/') + '/api/server/version', timeout=30)
+r.raise_for_status()
 curr_vers = r.json()
 curr_vers_str = (f'v{curr_vers["major"]}.{curr_vers["minor"]}'
                  f'.{curr_vers["patch"]}')
@@ -66,11 +115,16 @@ curr_vers_str = (f'v{curr_vers["major"]}.{curr_vers["minor"]}'
 r = requests.get(
     "https://api.github.com/repos/immich-app/immich/releases/latest",
     allow_redirects=True, timeout=30)
+r.raise_for_status()
 release_data = r.json()
 
 # Extract release version from 'tag_name' or 'name'.
 # It will be a string in the form of 'v<major>.<minor>.<patch>'.
 latest_version_str = release_data['tag_name']
+if (release_data.get('draft') or release_data.get('prerelease')
+        or re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', latest_version_str) is None):
+    print('Immich-Updater: Not a stable release. Will not update.')
+    sys.exit(0)
 latest_version = latest_version_str.lstrip('v').split('.')
 
 # If major version has changed, assume there will be breaking changes.
@@ -81,8 +135,10 @@ if int(latest_version[0]) != int(curr_vers['major']):
     sys.exit(0)
 
 # If no other changes, then can be done.
-if (int(latest_version[1]) == int(curr_vers['minor'])
-        and int(latest_version[2]) == int(curr_vers['patch'])):
+if tuple(map(int, latest_version)) <= (
+        curr_vers['major'], curr_vers['minor'], curr_vers['patch']):
+    if args.verbose or args.dry_run:
+        print(f'Immich-Updater: Already at {curr_vers_str} or newer.')
     sys.exit(0)
 
 # If there has been a minor version change, then need to check the release
@@ -95,7 +151,8 @@ if int(latest_version[1]) != int(curr_vers['minor']):
         # This has been a consistent pattern in the release notes for a while.
         if re.search('breaking change', line, re.IGNORECASE) is not None:
             # Create a breaking change flag file with the breaking version #
-            BCF.write_text(latest_version_str, encoding='utf-8')
+            if not args.dry_run:
+                BCF.write_text(latest_version_str, encoding='utf-8')
 
             print('Immich-Updater: A breaking change has been detected when'
                   ' comparing the currently-installed version'
@@ -115,14 +172,30 @@ release_DT = datetime.fromisoformat(
 # Has enough time elapsed?
 if (datetime.now(timezone.utc) - release_DT).days < DELAY_DAYS:
     # No. Abort.
+    if args.verbose or args.dry_run:
+        print(f'Immich-Updater: Current {curr_vers_str}; latest '
+              f'{latest_version_str}, published {release_data["published_at"]}. '
+              f'Waiting until {(release_DT + timedelta(days=DELAY_DAYS)).isoformat()}.')
     sys.exit(0)
 
 # If we made it this far, then there has been an update and no breaking
 # changes have been detected. Ok to proceed with update.
 
+if args.dry_run:
+    print(f'Immich-Updater: Dry run: would update {curr_vers_str} to '
+          f'{latest_version_str}, pin .env, and restart Docker Compose.')
+    sys.exit(0)
+
+# Refuse to start an update when its persistent version pin cannot be written.
+env_path = Path(IMMICH_DIR, '.env')
+if env_path.is_symlink() or not env_path.is_file():
+    print('Immich-Updater: A regular .env file is required. Will not update.')
+    sys.exit(1)
+
 # Build a docker SH command
 docker = sh.Command('docker')
-docker = docker.bake(_cwd=IMMICH_DIR)
+docker = docker.bake(_cwd=IMMICH_DIR,
+                     _env={**os.environ, 'IMMICH_VERSION': latest_version_str})
 
 # pull
 print(
@@ -131,6 +204,10 @@ try:
     out = docker('compose', 'pull')
 except sh.ErrorReturnCode as e:
     err(e)
+
+# Persist only after the selected images have been downloaded successfully.
+# Keep the selected version if startup fails; automatic downgrades are unsafe.
+persist_version(latest_version_str)
 
 # reload
 print('Immich-Updater: Reloading server.')
