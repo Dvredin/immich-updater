@@ -1,7 +1,9 @@
 [Unit]
-Description=Update Immich after a seven-day release delay
+Description=Rehearsed delayed Immich updates with full-state recovery (local logs only)
 Wants=network-online.target
 After=network-online.target docker.service
+StartLimitIntervalSec=2h
+StartLimitBurst=3
 
 [Service]
 Type=oneshot
@@ -10,4 +12,7 @@ UMask=0077
 Environment=IMMICH_DIR=/opt/immich
 WorkingDirectory=/opt/immich-updater
 ExecStart=/usr/bin/flock -n /var/lib/immich-updater/update.lock /opt/immich-updater/.venv/bin/python /opt/immich-updater/immich_updater.py --immich-dir ${IMMICH_DIR} --verbose
-TimeoutStartSec=30min
+TimeoutStartSec=3h
+TimeoutStopSec=30min
+Restart=on-failure
+RestartSec=5min

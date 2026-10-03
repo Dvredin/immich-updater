@@ -4,3 +4,10 @@ __pycache__/
 .env
 .env.*
 BREAKING_CHANGE
+UPDATE_FAILED
+.immich-updater.lock
+.immich-updater-backups/
+.immich-updater-state/
+.live-acceptance/
+docs/DEPLOYMENT_HANDOFF.md
+docs/*-private.jsonl

@@ -1,5 +1,5 @@
 [Unit]
-Description=Check daily for a stable Immich release at least seven days old
+Description=Daily security-gated Immich upgrade rehearsal and full-state recovery
 
 [Timer]
 OnCalendar=*-*-* 09:35:00

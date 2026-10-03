@@ -1,2 +1,2 @@
 requests>=2.31,<3
-sh>=2,<3
+semantic-version>=2.10,<3
