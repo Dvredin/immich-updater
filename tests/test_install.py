@@ -20,9 +20,9 @@ module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 def good_receipt():
     return '\n'.join(json.dumps(row) for row in [
         {'event':'decision','decision':'verified_not_applied','target':'v3.2.4'},
-        {'event':'rehearsal','stage':'passed','target':'v3.2.4','runtime_isolation_verified':True,'production_mutations':False},
+        {'event':'rehearsal','stage':'passed','target':'v3.2.4','runtime_isolation_verified':True,'resource_limits_verified':True,'production_mutations':False},
         {'event':'restore_drill','stage':'passed','target':'v3.2.4','production_mutations':False,
-         'database_restored':True,'files_restored':True,'configuration_restored':True,'old_image_and_health_verified':True}])
+         'database_restored':True,'files_restored':True,'configuration_restored':True,'old_image_and_health_verified':True,'resource_limits_verified':True}])
 
 
 class InstallerTests(unittest.TestCase):
@@ -44,6 +44,12 @@ class InstallerTests(unittest.TestCase):
         self.assertIn('rehearsal.py',files)
         for name,data in files.items():
             if name.endswith('.py'):compile(data,name,'exec')
+    def test_gate_missing_clone_resource_verification_blocks(self):
+        for stage in (1,2):
+            rows=[json.loads(line) for line in good_receipt().splitlines()]
+            rows[stage].pop('resource_limits_verified')
+            with self.assertRaises(module.StopInstall):module.gate('\n'.join(json.dumps(row) for row in rows))
+
     def test_gate_positive(self):
         self.assertEqual(module.gate(good_receipt()),'v3.2.4')
     def test_gate_skip_is_not_acceptance(self):

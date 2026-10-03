@@ -1,0 +1,41 @@
+{
+  "stage": "passed",
+  "profile": "compact-4g-v2",
+  "data": "purpose-built synthetic fixture only",
+  "source": "v3.1.0",
+  "target": "v3.2.4",
+  "actual_uploaded_original_and_album": true,
+  "face_person_album_metadata_preserved": true,
+  "authenticated_reads_and_album_write_delete": true,
+  "original_file_api_hash_verified": true,
+  "existing_password_login_verified": true,
+  "destructive_full_database_files_configuration_image_restore": "passed",
+  "source_upgrade_and_persisted_version_pin": "passed",
+  "owner_production_accessed": false,
+  "lab_outer_pool": {
+    "limit_bytes": 4294967296,
+    "swap_limit_bytes": 0,
+    "observed_peak_bytes": 3642793984,
+    "oom_events": 0,
+    "oom_kills": 0,
+    "actual_source_and_clone_pid_ancestry_checked": true
+  },
+  "clone_pool": {
+    "configured_limit_bytes": 1912602624,
+    "swap_limit_bytes": 0,
+    "observed_rehearsal_peak_bytes": 1912713216,
+    "current_at_rehearsal_acceptance_bytes": 1885659136,
+    "candidate_before_rollback_peak_bytes": 1912627200,
+    "restored_runtime_peak_bytes": 1912627200,
+    "parent_and_child_oom_events": 0,
+    "historical_transient_peak_retained": true
+  },
+  "native_tests_passed": 158,
+  "independent_review_scope": "shared pool only; pure mocks, not full controller/live acceptance",
+  "limitations": [
+    "An outer container slice is not a complete 4 GiB VM/OS/swap/IO emulation.",
+    "Controller/copy process memory is outside the outer container slice.",
+    "Real host copied-data prepare is still required before activation.",
+    "No claim about all future migrations, ML models or rare logic bugs."
+  ]
+}

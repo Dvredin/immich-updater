@@ -12,12 +12,15 @@ import re
 import secrets
 import select
 import shutil
+import shlex
 import subprocess
 import time
 import uuid
 from pathlib import Path
 
 from risk_checks import log, version
+from resource_policy import (settings, preflight_memory, verify_containers, ResourceError,
+                             ResourceUnavailable, parent_slice, ensure_parent, release_parent, CLONE_LABEL)
 
 NODE_HTTP = r"""
 let s='';for await(const b of process.stdin)s+=b;
@@ -49,10 +52,16 @@ def private_json(path: Path, value):
         os.fsync(out.fileno())
 
 
-def run(command, *, payload=None, timeout=60, stdout=None, stdin=None):
+def run(command, *, payload=None, timeout=60, stdout=None, stdin=None, resource_errors_transient=False):
     result = subprocess.run(command, input=payload, stdin=stdin, stdout=stdout or subprocess.PIPE,
                             stderr=subprocess.PIPE, timeout=timeout)
     if result.returncode:
+        # Only clone lifecycle ENOMEM is transient. Never treat source mutation
+        # failures or an actual clone OOM as successful resource deferral.
+        if resource_errors_transient and re.search(
+                rb'cannot allocate memory|not enough memory|out of memory.*(?:create|start)|ENOMEM',
+                result.stderr or b'', re.IGNORECASE):
+            raise ResourceUnavailable('Docker clone create/start failed with transient memory exhaustion; source unchanged.')
         # Docker/config errors may include environment values: do not print stderr.
         raise RehearsalError(f'Command failed (exit {result.returncode}); private execution state retained.')
     return result.stdout or b''
@@ -66,6 +75,15 @@ class Compose:
             self.base += ['-p', project]
 
     def call(self, *arguments, **kwargs):
+        if arguments and arguments[0] in {'create', 'up', 'start'}:
+            try:
+                local = json.loads(self.path.read_text())
+            except (OSError, json.JSONDecodeError):
+                local = {}
+            if str(local.get('name', '')).startswith('immich-rehearsal-') and any(
+                    (item.get('labels') or {}).get(CLONE_LABEL) == 'true'
+                    for item in local.get('services', {}).values()):
+                kwargs['resource_errors_transient'] = True
         return run(self.base + list(arguments), **kwargs)
 
     def config(self):
@@ -153,6 +171,22 @@ def clone_private_tree(source: Path, destination: Path):
                 raise RehearsalError('Clone contains a symlink escaping its private root.')
 
 
+def compact_postgres_command(service):
+    """Append only clone memory tuning, retaining the image's preload/config args."""
+    command = service.get('command')
+    if command is None:
+        metadata = json.loads(run(['docker', 'image', 'inspect', service['image']]))[0]
+        command = metadata.get('Config', {}).get('Cmd')
+    if isinstance(command, str):
+        command = shlex.split(command)
+    if not isinstance(command, list) or not command or any(not isinstance(arg, str) for arg in command):
+        raise RehearsalError('PostgreSQL startup arguments unavailable for compact memory tuning.')
+    if Path(command[0]).name != 'postgres':
+        raise RehearsalError('Unknown PostgreSQL startup command; compact tuning refused.')
+    return list(command) + ['-c', 'shared_buffers=64MB', '-c', 'work_mem=4MB',
+                            '-c', 'maintenance_work_mem=64MB']
+
+
 def build_isolated(config, sandbox: Path, selected, mount_map, password):
     version(selected)
     services = config.get('services') or {}
@@ -181,14 +215,16 @@ def build_isolated(config, sandbox: Path, selected, mount_map, password):
             if any(suffix.endswith(x) for x in ('-cuda', '-rocm', '-armnn', '-openvino', '-rknn')):
                 raise RehearsalError('Hardware-accelerated production needs a separately verified rehearsal backend.')
             image = 'ghcr.io/immich-app/immich-machine-learning:' + selected
-        item = {'image': image, 'networks': ['isolated'], 'restart': 'no', 'dns': ['127.0.0.1'],
-                'mem_limit': '2g' if name.startswith('immich') else '1g', 'cpus': 2}
+        item = {'image': image, 'networks': ['isolated'], 'restart': 'no', 'dns': ['127.0.0.1']}
+        item.update(settings(name))
+        item['cgroup_parent'] = parent_slice(sandbox)
         env = dict(service.get('environment') or {})
         # Strip outbound credentials and endpoints; only stock DB/Redis settings survive.
         if name == 'immich-server':
             env = {'DB_PASSWORD': password, 'DB_USERNAME': db_user, 'DB_DATABASE_NAME': db_name,
                    'DB_HOSTNAME': 'database', 'DB_PORT': '5432', 'REDIS_HOSTNAME': 'redis',
-                   'IMMICH_MACHINE_LEARNING_URL': 'http://immich-machine-learning:3003'}
+                   'IMMICH_MACHINE_LEARNING_URL': 'http://immich-machine-learning:3003',
+                   'NODE_OPTIONS': '--max-old-space-size=512'}
         elif name == 'database':
             env = {'POSTGRES_PASSWORD': password, 'POSTGRES_USER': db_user, 'POSTGRES_DB': db_name,
                    'POSTGRES_INITDB_ARGS': '--data-checksums'}
@@ -204,6 +240,8 @@ def build_isolated(config, sandbox: Path, selected, mount_map, password):
         for field in ('command', 'entrypoint', 'healthcheck', 'user', 'shm_size', 'working_dir', 'stop_grace_period', 'init'):
             if field in service:
                 item[field] = copy.deepcopy(service[field])
+        if name == 'database':
+            item['command'] = compact_postgres_command(service)
         volumes = []
         for mount in service.get('volumes') or []:
             target = mount['target']
@@ -334,7 +372,46 @@ def verify_isolation(clone, sandbox):
             if (not network.get('Internal') or options.get('com.docker.network.bridge.gateway_mode_ipv4') != 'isolated'
                     or options.get('com.docker.network.bridge.gateway_mode_ipv6') != 'isolated'):
                 raise RehearsalError('Clone network is not internal/host-isolated.')
+    try:
+        verify_containers(inspect)
+    except ResourceError as exc:
+        raise RehearsalError(str(exc)) from exc
     return True
+
+
+def wait_clone_workers(clone, timeout=300):
+    """Stock HTTP health can precede microservices/geodata initialization."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        # Logs are consumed locally only. Missing/changed stock bootstrap evidence
+        # is an unsupported readiness path, never permission to overlap heavy startup.
+        output = clone.call('logs', '--no-color', 'immich-server', timeout=30)
+        if b'Immich Microservices is running' in output:
+            return True
+        time.sleep(1)
+    raise RehearsalError('Stock background worker initialization did not complete before ML startup.')
+
+
+def start_clone_staged(clone):
+    """Use stock services sequentially; full acceptance still requires all four alive."""
+    clone.call('up', '-d', '--no-recreate', '--wait', '--wait-timeout', '180',
+               'database', 'redis', timeout=240)
+    # ML model/runtime initialization does not need to overlap DB migrations and
+    # geodata loading. Commands, service topology and final runtime remain intact.
+    clone.call('up', '-d', '--no-recreate', '--no-deps', '--wait', '--wait-timeout', '300',
+               'immich-server', timeout=360)
+    wait_clone_workers(clone)
+    clone.call('up', '-d', '--no-recreate', '--wait', '--wait-timeout', '180', timeout=240)
+
+
+def clone_resources(clone):
+    ids = clone.call('ps', '-aq').decode().split()
+    if not ids:
+        raise RehearsalError('No clone containers for resource verification.')
+    try:
+        return verify_containers(json.loads(run(['docker', 'inspect', *ids])), require_running=True)
+    except ResourceError as exc:
+        raise RehearsalError(str(exc)) from exc
 
 
 def rehearse(source_path, selected, state_root, candidate_path=None):
@@ -362,6 +439,8 @@ def rehearse(source_path, selected, state_root, candidate_path=None):
                 raise RehearsalError('Unsupported source mount.')
             if original == state_root or original in state_root.parents or state_root in original.parents:
                 raise RehearsalError('State root overlaps source mount; no capture permitted.')
+    memory = preflight_memory()  # reserve source/host RAM before capture or clone startup
+    log('resource_check', **memory, production_mutations=False)
     state_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     if state_root.stat().st_mode & 0o077:
         raise RehearsalError('Rehearsal state root must be private (0700).')
@@ -402,9 +481,11 @@ def rehearse(source_path, selected, state_root, candidate_path=None):
     private_json(sandbox / 'receipt.json', {'stage': 'captured', 'target': selected,
                                            'production_mutations': False})
     try:
+        preflight_memory()  # copies/dumps may have coincided with new host workload
+        ensure_parent(isolated)
         clone.call('create', timeout=180)
         verify_isolation(clone, sandbox)  # actual mounts/network BEFORE any process starts
-        clone.call('up', '-d', '--wait', '--wait-timeout', '180', 'database', 'redis', timeout=240)
+        clone.call('up', '-d', '--no-recreate', '--wait', '--wait-timeout', '180', 'database', 'redis', timeout=240)
         verify_isolation(clone, sandbox)
         # Restore only into this fresh, private PostgreSQL instance.
         with (sandbox / 'database.dump').open('rb') as archive:
@@ -415,7 +496,7 @@ def rehearse(source_path, selected, state_root, candidate_path=None):
         if restored != baseline:
             raise RehearsalError('Restored metadata counts differ from the captured database.')
         token = install_local_probe_key(clone, username, database)
-        clone.call('up', '-d', '--wait', '--wait-timeout', '240', timeout=300)
+        start_clone_staged(clone)
         post = invariants(clone, username, database)
         if post != baseline:
             raise RehearsalError('Candidate changed sampled metadata counts during startup.')
@@ -423,17 +504,31 @@ def rehearse(source_path, selected, state_root, candidate_path=None):
         verify_isolation(clone, sandbox)
         receipt = {'stage': 'passed', 'target': selected, 'tests': tests,
                    'metadata_counts_preserved': True, 'runtime_isolation_verified': True,
+                   'resource_limits_verified': True, 'resources': clone_resources(clone),
                    'production_mutations': False, 'sandbox': str(sandbox)}
         private_json(sandbox / 'receipt.json', receipt)
         log('rehearsal', **receipt)
         return receipt
     except Exception as exc:
+        # Preserve diagnostics before owned containers are removed. The file is
+        # private: logs can contain application settings and must never be printed.
+        try:
+            if not isinstance(clone.base, list):
+                raise OSError('No Compose process metadata for private diagnostics.')
+            diagnostics = subprocess.run(clone.base + ['logs', '--no-color', '--tail', '160'],
+                                         capture_output=True, timeout=30)
+            private_json(sandbox / 'failure-diagnostics.json', {
+                'stdout': diagnostics.stdout.decode(errors='replace'),
+                'stderr': diagnostics.stderr.decode(errors='replace')})
+        except (OSError, subprocess.TimeoutExpired):
+            pass
         private_json(sandbox / 'receipt.json', {'stage': 'failed', 'target': selected,
                                                'error_type': type(exc).__name__, 'production_mutations': False})
         raise
     finally:
         # Owned clone only; preserve files/receipts for inspection and do not delete data.
         clone.call('down', '--timeout', '30', timeout=90)
+        release_parent(isolated)
 
 
 def main():

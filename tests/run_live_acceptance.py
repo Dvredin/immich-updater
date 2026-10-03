@@ -5,7 +5,9 @@ Root required. Never reads or modifies an existing owner deployment.
 import argparse
 import json
 import os
+import re
 import secrets
+from unittest.mock import patch
 import sys
 import tempfile
 import uuid
@@ -19,9 +21,11 @@ from recovery_drill import restore_drill
 from seed_live_fixture import seed
 
 
-def acceptance(root, selected='v3.2.4'):
+def acceptance(root, selected='v3.2.4', cgroup_parent=None):
     if os.geteuid() != 0:
         raise RehearsalError('Root required for real cold PostgreSQL file snapshots.')
+    if cgroup_parent and not re.fullmatch(r'immichupdatertest[a-z0-9]+\.slice', cgroup_parent):
+        raise RehearsalError('A lab parent must be an explicitly test-only transient slice.')
     root = Path(root).resolve()
     if root.exists():
         raise RehearsalError('Use a fresh nonexistent owned lab root; never an existing installation.')
@@ -44,6 +48,8 @@ def acceptance(root, selected='v3.2.4'):
     for name,image in images.items():
         run(['docker','pull',image],timeout=1800)
         config['services'][name]={'image':image,'networks':['isolated'],'restart':'no','mem_limit':'2g'}
+        if cgroup_parent:
+            config['services'][name]['cgroup_parent']=cgroup_parent
     config['services']['database'].update(environment={
         'POSTGRES_PASSWORD':password,'POSTGRES_USER':'postgres','POSTGRES_DB':'immich',
         'POSTGRES_INITDB_ARGS':'--data-checksums'},shm_size='128mb',volumes=[{
@@ -99,5 +105,8 @@ if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--lab-root',required=True)
     parser.add_argument('--target',default='v3.2.4')
+    parser.add_argument('--cgroup-parent',help='Explicit test-only slice covering source and private clones.')
     args=parser.parse_args()
-    acceptance(args.lab_root,args.target)
+    import resource_policy
+    with patch('resource_policy.LAB_PARENT', args.cgroup_parent):
+        acceptance(args.lab_root,args.target,args.cgroup_parent)

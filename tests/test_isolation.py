@@ -17,6 +17,10 @@ class IsolationTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR'));self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name);self.root.chmod(0o700)
+        for name in ('ensure_parent','release_parent'):
+            mock=patch('rehearsal.'+name);mock.start();self.addCleanup(mock.stop)
+        parent=patch('rehearsal.parent_slice',return_value='immichupdaterclone'+'a'*32+'.slice')
+        parent.start();self.addCleanup(parent.stop)
         self.library=self.root/'files';self.library.mkdir()
         self.config={'services':{
             'immich-server':{'image':'ghcr.io/immich-app/immich-server:v3.1.0','ports':['2283:2283'],
@@ -24,7 +28,7 @@ class IsolationTests(unittest.TestCase):
                              'volumes':[{'type':'bind','source':'/fixture-original','target':'/data'}]},
             'immich-machine-learning':{'image':'ghcr.io/immich-app/immich-machine-learning:v3.1.0',
                                        'volumes':[{'type':'volume','source':'model-cache','target':'/cache'}]},
-            'database':{'image':'postgres:14','environment':{},'volumes':[{
+            'database':{'image':'postgres:14','command':['postgres'],'environment':{},'volumes':[{
                 'type':'bind','source':'/fixture-database','target':'/var/lib/postgresql/data'}]},
             'redis':{'image':'valkey/valkey:9'}}}
         self.mapping={'/fixture-original':self.library,'volume:model-cache':self.root/'cache'}
@@ -66,7 +70,9 @@ class IsolationTests(unittest.TestCase):
         self.config['services']['database']['healthcheck']={'test':['CMD','pg_isready']}
         self.config['services']['immich-server']['entrypoint']=['/bin/sh','/candidate-start.sh']
         result=self.build()
-        self.assertEqual(result['services']['database']['command'],self.config['services']['database']['command'])
+        self.assertEqual(result['services']['database']['command'][:3],self.config['services']['database']['command'])
+        self.assertIn('shared_buffers=64MB',result['services']['database']['command'])
+        self.assertIn('work_mem=4MB',result['services']['database']['command'])
         self.assertEqual(result['services']['database']['healthcheck'],self.config['services']['database']['healthcheck'])
         self.assertEqual(result['services']['immich-server']['entrypoint'],self.config['services']['immich-server']['entrypoint'])
     def test_overlap_state_rejected_before_any_capture_or_write(self):
@@ -116,6 +122,7 @@ class EntrypointTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR'));self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name);(self.root/'compose.yml').write_text('fixture');(self.root/'.env').write_text('IMMICH_VERSION=v3.1.0\n')
         self.args=updater.parser().parse_args(['--immich-dir',str(self.root),'--state-dir',str(self.root/'state')])
+        memory=patch('resource_policy.preflight_memory',return_value={'profile':'test-only'});memory.start();self.addCleanup(memory.stop)
     def test_recovery_precedes_unavailable_source_api(self):
         with patch('transaction.restore',return_value='restored') as restore,patch('immich_updater.current_version',side_effect=RuntimeError('should not run')) as current,contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(updater.run(self.args),0);restore.assert_called_once();current.assert_not_called()

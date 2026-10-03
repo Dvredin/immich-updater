@@ -163,7 +163,8 @@ def candidate_config(source_path, selected, state_dir):
         # Keep official image, command and health checks, but retain site configuration.
         service['environment'] = copy.deepcopy(old.get('environment', {}))
         service['volumes'] = copy.deepcopy(old.get('volumes', []))
-        for field in ('ports', 'restart', 'networks', 'user', 'mem_limit', 'cpus', 'shm_size'):
+        for field in ('ports', 'restart', 'networks', 'user', 'mem_limit', 'memswap_limit',
+                      'mem_swappiness', 'oom_kill_disable', 'oom_score_adj', 'cgroup_parent', 'cpus', 'shm_size'):
             if field in old:
                 service[field] = copy.deepcopy(old[field])
         if name.startswith('immich-'):
@@ -266,18 +267,52 @@ def assert_exclusive(roots, project):
                 raise RehearsalError('Another running container shares mutable production state.')
 
 
+def start_checked(stack, *arguments, timeout=300):
+    from resource_policy import CLONE_LABEL
+    cfg = stack.config()
+    is_clone = any((service.get('labels') or {}).get(CLONE_LABEL) == 'true'
+                   for service in cfg['services'].values())
+    if is_clone:
+        from rehearsal import verify_isolation, ensure_parent, start_clone_staged
+        # All transaction clones have already been stopped or verified. Creation
+        # must not be repeated again by up after these exact containers were inspected.
+        path = Path(stack.path)
+        if path.absolute() != path.resolve():
+            raise RehearsalError('Clone transaction configuration must not traverse symlinks.')
+        sandbox = next((parent for parent in path.resolve().parents
+                        if re.fullmatch(r'run-[0-9a-f]{32}', parent.name)), None)
+        if sandbox is None:
+            raise RehearsalError('No private rehearsal root for clone transaction inspection.')
+        ensure_parent(cfg)
+        stack.call('create', '--force-recreate', timeout=180)
+        # Checkpoint Compose files are nested below transactions/checkpoint-*,
+        # but their live state is still under the original owned rehearsal root.
+        verify_isolation(stack, sandbox)
+        return start_clone_staged(stack)
+    return stack.call(*arguments, timeout=timeout)
+
+
 def runtime_checks(stack, selected, baseline):
+    from resource_policy import CLONE_LABEL
+    if any((service.get('labels') or {}).get(CLONE_LABEL) == 'true'
+           for service in stack.config()['services'].values()):
+        from rehearsal import clone_resources
+        clone_resources(stack)  # includes child OOM; never apply clone budgets to production
     env = stack.config()['services']['database'].get('environment', {})
     username, database = env.get('POSTGRES_USER', 'postgres'), env.get('POSTGRES_DB', 'immich')
     if invariants(stack, username, database) != baseline:
         raise RehearsalError('Post-start metadata changed unexpectedly.')
     token = install_local_probe_key(stack, username, database)
     try:
-        return functional_checks(stack, selected, token, Path(stack.path).parent)
+        tests = functional_checks(stack, selected, token, Path(stack.path).parent)
     finally:
         import hashlib
         digest = hashlib.sha256(token.encode()).hexdigest()
         stack.sql("DELETE FROM public.api_key WHERE key=decode('" + digest + "','hex');", database, username)
+    if any((service.get('labels') or {}).get(CLONE_LABEL) == 'true'
+           for service in stack.config()['services'].values()):
+        tests['clone_resource_checks'] = clone_resources(stack)
+    return tests
 
 
 def checkpoint(stack, source_path, state_dir, baseline, installed):
@@ -346,7 +381,7 @@ def restore(state_dir):
         # Candidate was verified with all ingress ports CLOSED. Once committed,
         # activating it may admit new writes: retry activation, never erase them.
         active = Compose(state['source'], state['project'])
-        active.call('up', '-d', '--wait', '--wait-timeout', '240', timeout=300)
+        start_checked(active, 'up', '-d', '--wait', '--wait-timeout', '240', timeout=300)
         answer = active.api('/api/server/version')
         wanted = tuple(int(x) for x in state['target'][1:].split('.'))
         data = answer.get('data') or {}
@@ -360,7 +395,7 @@ def restore(state_dir):
         return 'committed'
     if state['phase'] == 'rolled_back':
         old = Compose(state['old_compose'], state['project'])
-        old.call('up', '-d', '--wait', '--wait-timeout', '240', timeout=300)
+        start_checked(old, 'up', '-d', '--wait', '--wait-timeout', '240', timeout=300)
         answer = old.api('/api/server/version')
         wanted = tuple(int(x) for x in state['installed'][1:].split('.'))
         data = answer.get('data') or {}
@@ -436,7 +471,7 @@ def restore(state_dir):
         state['phase'] = 'checking_restore'
         state_save(journal, state)
     try:
-        probation.call('up', '-d', '--force-recreate', '--wait', '--wait-timeout', '240', timeout=300)
+        start_checked(probation, 'up', '-d', '--force-recreate', '--wait', '--wait-timeout', '240', timeout=300)
         if unchanged:
             env = probation.config()['services']['database'].get('environment', {})
             state['baseline'] = invariants(probation, env.get('POSTGRES_USER', 'postgres'), env.get('POSTGRES_DB', 'immich'))
@@ -476,7 +511,7 @@ def apply(source_path, candidate_path, selected, installed, state_dir, *, inject
             service.pop('ports', None)
         atomic_bytes(source_path, json.dumps(probation).encode())
         active = Compose(source_path, cfg['name'])
-        active.call('up', '-d', '--wait', '--wait-timeout', '240', timeout=300)
+        start_checked(active, 'up', '-d', '--wait', '--wait-timeout', '240', timeout=300)
         tests = runtime_checks(active, selected, baseline)
         if inject_failure:
             if failure_hook:
@@ -490,7 +525,7 @@ def apply(source_path, candidate_path, selected, installed, state_dir, *, inject
         atomic_bytes(source_path, json.dumps(candidate).encode())
         state['phase'] = 'committed'
         state_save(state_dir / 'transaction.json', state)
-        active.call('up', '-d', '--wait', '--wait-timeout', '240', timeout=300)
+        start_checked(active, 'up', '-d', '--wait', '--wait-timeout', '240', timeout=300)
         answer = active.api('/api/server/version')
         data = answer.get('data') or {}
         if answer['status'] != 200 or tuple(data.get(k) for k in ('major', 'minor', 'patch')) != tuple(int(x) for x in selected[1:].split('.')):

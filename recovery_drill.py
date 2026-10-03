@@ -5,7 +5,8 @@ import json
 import uuid
 from pathlib import Path
 
-from rehearsal import Compose, RehearsalError, invariants, private_json, rehearse
+from rehearsal import Compose, RehearsalError, invariants, private_json, rehearse, clone_resources, verify_isolation, start_clone_staged
+from resource_policy import preflight_memory, ensure_parent, release_parent
 from transaction import apply, atomic_bytes, pinned, private_root
 from risk_checks import log
 
@@ -46,8 +47,13 @@ def restore_drill(source_path, candidate_path, installed, selected, state_root):
         service['pull_policy'] = 'never'
     prepared = sandbox / 'candidate.json'
     private_json(prepared, upgraded)
-    clone.call('up', '-d', '--wait', '--wait-timeout', '240', timeout=300)
+    preflight_memory()
     try:
+        ensure_parent(original)
+        clone.call('create', timeout=180)
+        verify_isolation(clone, sandbox)  # fresh containers, inspected BEFORE startup
+        start_clone_staged(clone)
+        clone_resources(clone)
         env = original['services']['database'].get('environment', {})
         user, database = env.get('POSTGRES_USER', 'postgres'), env.get('POSTGRES_DB', 'immich')
         baseline = invariants(clone, user, database)
@@ -55,7 +61,9 @@ def restore_drill(source_path, candidate_path, installed, selected, state_root):
         before = tree_hashes(library)
         config_bytes = path.read_bytes()
         env_bytes = (sandbox / '.env').read_bytes()
+        candidate_resources = {}
         def corrupt(active):
+            candidate_resources.update(clone_resources(active))  # before recreating old recovery containers
             # Mutate real clone DB and files only after target migrations/health ran.
             active.sql('DELETE FROM public.album;', database, user)
             atomic_bytes(library / '.test-only-rollback-mutation', b'intentionally modified clone file\n')
@@ -85,12 +93,17 @@ def restore_drill(source_path, candidate_path, installed, selected, state_root):
                 immutable(tree_hashes(library)) != immutable(tree_hashes(archived_library)) or
                 path.read_bytes() != config_bytes or (sandbox / '.env').read_bytes() != env_bytes):
             raise RehearsalError('Restore drill did not restore original files/configuration state.')
+        if not candidate_resources:
+            raise RehearsalError('Candidate resource checks missing before destructive recovery injection.')
         receipt = {'stage': 'passed', 'installed': installed, 'target': selected,
                    'post_migration_failure_injected': True, 'database_restored': True,
                    'files_restored': True, 'configuration_restored': True,
-                   'old_image_and_health_verified': True, 'production_mutations': False}
+                   'old_image_and_health_verified': True, 'production_mutations': False,
+                   'resource_limits_verified': True, 'resources': clone_resources(clone),
+                   'candidate_resources_before_rollback': candidate_resources}
         private_json(sandbox / 'restore-drill-receipt.json', receipt)
         log('restore_drill', **receipt)
         return receipt
     finally:
         clone.call('down', '--timeout', '30', timeout=90)
+        release_parent(original)

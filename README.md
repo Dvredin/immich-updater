@@ -33,12 +33,63 @@ There is downtime during the fresh production checkpoint and the production upda
 
 ## Host requirements
 
-- Linux, Python 3.10+, root for complete PostgreSQL/named-volume cold copies; Docker Compose with `up --wait`.
+- Linux, Python 3.10+, root for complete PostgreSQL/named-volume cold copies; Docker Compose with `up --wait`, local cgroup v2, Docker systemd cgroup driver and readable clone memory controllers.
 - Docker Engine supporting bridge `gateway_mode_ipv4=isolated` and `gateway_mode_ipv6=isolated` on an internal bridge. Unsupported options must block rehearsal; never replace this with ordinary shared networking.
 - Exactly the stock `immich-server`, `immich-machine-learning`, `database`, `redis` services, normal `/data` and PostgreSQL directory mappings, a regular `.env` and one Compose file (or `--compose-file`).
 - Mutable data roots must be disjoint ordinary local directories, not broad system paths, symlink parents, mountpoints, or externally-managed volume drivers. GPU/device passthrough and changed service topology require another verified backend; they are not silently emulated as production compatibility.
 - Enough space for two full rehearsal copies, a fresh cold checkpoint, recovery staging and retained previous/failed copies. CoW can reduce this but is not assumed. Nothing is automatically deleted. Insufficient space blocks changes and is logged.
 - Source images must still exist locally for content-addressed recovery. Do not prune images/checkpoints during an active transaction.
+
+## Compact rehearsal on a 4 GiB host
+
+Rehearsal and recovery copies run sequentially. Each copy has its own native
+systemd/cgroup-v2 parent pool with a **1824 MiB total hard RAM limit**, zero swap,
+and these additional child ceilings:
+
+| Clone service | Individual ceiling |
+|---|---:|
+| Server | 1408 MiB |
+| PostgreSQL | 1024 MiB |
+| Machine learning | 384 MiB |
+| Redis | 32 MiB |
+
+Child ceilings intentionally sum to more than the shared pool: a service can borrow
+currently unused capacity, but the complete clone cannot exceed **1824 MiB**.
+This avoids reserving idle RAM for one service while another OOMs during startup.
+Within each clone, PostgreSQL/Redis start first, then the stock server starts with
+ML still stopped. HTTP health alone is insufficient: ML starts only after the stock
+microservices bootstrap has completed, so its initialization does not overlap geodata
+import. Missing/changed bootstrap evidence fails closed. All four must be running and
+pass resource checks for acceptance. This staging applies only to isolated copies,
+not production startup. Already inspected containers are not recreated during startup.
+
+The kernel documents temporary accounting overcharges even with `memory.max` enforced.
+Receipts retain historical peaks; acceptance requires exact configured parent/child
+limits, zero OOM counters and current usage within budget, rather than mistaking a
+historical transient peak for an unenforced limit. The host/controller reserve is
+separate from the configured clone pool.
+Both parent and child enforcement, kernel ancestry and OOM counters must pass.
+Temporary pool settings apply only to the clone, never production or a global slice.
+
+The preflight requires **2080 MiB available RAM**: the shared clone pool plus a 256 MiB
+host/controller reserve. This replaces the former fixed 6 GiB free-RAM gate, not the
+rehearsal or recovery gates. Current source containers and their resource policy are
+not modified. Source resource/cgroup settings are retained during the eventual update.
+
+Every clone has swap disabled, no automatic restart and increased OOM-victim priority.
+The clone server uses the supported Node `--max-old-space-size=512` heap ceiling
+per Node process; this does not change production environment or worker topology.
+Clone PostgreSQL retains its original/image startup arguments and appends only
+`shared_buffers=64MB`, `work_mem=4MB`, `maintenance_work_mem=64MB`; image preload
+configuration must remain intact. These tuning arguments never enter production.
+Actual Docker limits are inspected before startup; after startup, local cgroup-v2
+`memory.max`, `memory.swap.max` and OOM counters are checked. A child-process OOM
+cannot be accepted merely because the container init remains alive. Host RAM pressure
+before a rehearsal is a logged automatic deferral, not a permanently quarantined release.
+A clone that cannot pass under its limits does not authorize a production update.
+
+This is a bounded clone policy, not a promise that every future release, ML model or
+large library fits 4 GiB. The host's real copied-data acceptance is still required.
 
 ## Installation on an existing host
 
@@ -51,7 +102,7 @@ sudo python3 tools/install.py --app-dir /opt/immich --expected-revision COMMIT_S
 ```
 
 The installer verifies the source revision, checks Docker 28+, x86-64-v2 where applicable,
-6 GiB available RAM and full-copy capacity, creates a private staging venv, runs the tests,
+the compact clone memory budget and full-copy capacity, creates a private staging venv, runs the tests,
 and runs `--prepare-only` on private copies. It preserves the previous updater, does not
 upgrade production and leaves the timer disabled. A skip is not host acceptance.
 
@@ -106,7 +157,7 @@ Before claiming installed, verify the actual VM's revision, service/drop-ins, Py
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -v
-.venv/bin/python -m compileall -q immich_updater.py risk_checks.py rehearsal.py transaction.py recovery_drill.py tests
+.venv/bin/python -m compileall -q immich_updater.py risk_checks.py resource_policy.py rehearsal.py transaction.py recovery_drill.py tests tools
 git diff --check
 ```
 

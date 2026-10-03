@@ -198,6 +198,14 @@ def run(args):
         raise ValueError('Legacy failed-update marker requires recovery before this updater can take ownership.')
     # Fetch/pull/preflight failures are infrastructure failures, not evidence of
     # a bad release. Retry them later without permanently quarantining the tag.
+    from resource_policy import preflight_memory, ResourceUnavailable
+    try:
+        memory = preflight_memory()
+    except ResourceUnavailable as exc:
+        log('decision', decision='defer_resources', target=selected, reason=str(exc),
+            production_mutations=False, automatic_retry=True)
+        return 0
+    log('resource_check', **memory, production_mutations=False)
     candidate = candidate_config(source_path, selected, state_dir / 'candidates')
     try:
         rehearse(source_path, selected, state_dir / 'rehearsals', candidate_path=candidate)
@@ -212,6 +220,10 @@ def run(args):
         if blocks:
             raise ValueError('Candidate acquired an unresolved/serious security advisory during rehearsal.')
         apply(source_path, candidate, selected, tag(current), state_dir)
+    except ResourceUnavailable as exc:
+        log('decision', decision='defer_resources', target=selected, reason=str(exc),
+            production_mutations=False, automatic_retry=True)
+        return 0
     except BaseException as exc:
         quarantine[selected] = {'installed': tag(current), 'error_type': type(exc).__name__,
                                 'recorded_at': datetime.now(timezone.utc).isoformat()}

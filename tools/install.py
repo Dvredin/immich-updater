@@ -18,6 +18,7 @@ from pathlib import Path
 
 REVISION = ''
 SOURCE_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(SOURCE_ROOT))
 APP = Path('/opt/immich')
 DEST = Path('/opt/immich-updater')
 STATE = Path('/var/lib/immich-updater/state')
@@ -53,10 +54,10 @@ def private(path, content):
 PACKAGE_FILES = (
     '.gitignore', 'LICENSE', 'README.md', 'docs/REHEARSAL_VERIFICATION.md',
     'immich_updater.py', 'rehearsal.py', 'transaction.py', 'recovery_drill.py',
-    'risk_checks.py', 'risk_policy.json', 'requirements.txt', 'requirements-dev.txt',
+    'risk_checks.py', 'risk_policy.json', 'resource_policy.py', 'requirements.txt', 'requirements-dev.txt',
     'systemd/immich-updater.service', 'systemd/immich-updater.timer',
     'tools/install.py', 'tests/test_automation.py', 'tests/test_isolation.py',
-    'tests/test_install.py', 'tests/run_live_acceptance.py', 'tests/seed_live_fixture.py',
+    'tests/test_install.py', 'tests/test_resources.py', 'tests/run_live_acceptance.py', 'tests/seed_live_fixture.py',
     'tests/archive/strict_policy_v1.py',
 )
 
@@ -101,9 +102,11 @@ def gate(output):
     target = decisions[-1].get('target')
     rehearsed = any(row.get('event') == 'rehearsal' and row.get('stage') == 'passed'
                     and row.get('target') == target and row.get('runtime_isolation_verified') is True
-                    and row.get('production_mutations') is False for row in rows)
+                    and row.get('production_mutations') is False
+                    and row.get('resource_limits_verified') is True for row in rows)
     restored = any(row.get('event') == 'restore_drill' and row.get('stage') == 'passed'
                    and row.get('target') == target and row.get('production_mutations') is False
+                   and row.get('resource_limits_verified') is True
                    and all(row.get(key) is True for key in ('database_restored','files_restored','configuration_restored','old_image_and_health_verified'))
                    for row in rows)
     if not (rehearsed and restored):
@@ -127,8 +130,14 @@ def prerequisites():
     print(json.dumps({'docker_engine':engine,'available_memory_MiB':available//(1024*1024),'architecture':platform.machine()}), flush=True)
     if int(engine.split('.')[0]) < 28:
         raise StopInstall('Docker Engine старее 28: изолированный шлюз не подтверждён. Docker/ОС автоматически не обновляются.')
-    if available < 6 * 1024**3:
-        raise StopInstall('Для безопасной параллельной репетиции нужно 6 GiB свободной RAM; сейчас меньше. Рабочий Immich не остановлен.')
+    from resource_policy import preflight_memory, ResourceError
+    if call('docker','info','--format','{{.CgroupVersion}} {{.CgroupDriver}}').stdout.strip() != '2 systemd':
+        raise StopInstall('Для общего лимита тестовой копии нужен локальный cgroup v2 с Docker systemd driver.')
+    try:
+        budget=preflight_memory(available)
+    except ResourceError as exc:
+        raise StopInstall(str(exc)) from exc
+    print(json.dumps({'compact_memory_gate':budget}),flush=True)
     if platform.machine() in {'x86_64','amd64'}:
         cpu = Path('/proc/cpuinfo').read_text().splitlines()
         flags = [set(line.split(':',1)[1].split()) for line in cpu if line.startswith('flags')]
@@ -272,8 +281,8 @@ def self_test():
     if not {'immich_updater.py','rehearsal.py','transaction.py','recovery_drill.py'} <= set(files):
         raise StopInstall('Неполный пакет.')
     fixture=[{'event':'decision','decision':'verified_not_applied','target':'v3.2.4'},
-             {'event':'rehearsal','stage':'passed','target':'v3.2.4','runtime_isolation_verified':True,'production_mutations':False},
-             {'event':'restore_drill','stage':'passed','target':'v3.2.4','production_mutations':False,'database_restored':True,'files_restored':True,'configuration_restored':True,'old_image_and_health_verified':True}]
+             {'event':'rehearsal','stage':'passed','target':'v3.2.4','runtime_isolation_verified':True,'resource_limits_verified':True,'production_mutations':False},
+             {'event':'restore_drill','stage':'passed','target':'v3.2.4','production_mutations':False,'database_restored':True,'files_restored':True,'configuration_restored':True,'old_image_and_health_verified':True,'resource_limits_verified':True}]
     if gate('\n'.join(json.dumps(row) for row in fixture)) != 'v3.2.4':raise StopInstall('Неверный positive gate.')
     for rows in ([],[{'event':'decision','decision':'skip'}],fixture[:-1],fixture[1:]):
         try:gate('\n'.join(json.dumps(row) for row in rows))
