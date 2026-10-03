@@ -47,6 +47,16 @@ Failed package steps now retain private diagnostics before raising, rather than
 discarding captured subprocess output. This does not establish which package step
 failed on any particular remote host and is not a new live migration/restore run.
 
+The subsequent private-state fixture correction passed **163 tests** from the exact
+23-file staged package under Python 3.12, effective UID 0 and the installer's inherited
+`umask 0077`, both normally and with simulated scarce host memory. The failure was
+reproduced first under that mask: `mkdir(mode=0755)` actually created a private `0700`
+directory, so expecting the validator to reject it was incorrect. The fixture now
+explicitly applies and checks `0755` before asserting rejection; a dedicated restrictive-
+umask regression covers it. The production private-state validator, installer umask,
+resource limits, controller and admission gates are unchanged. These are package/unit
+checks, not a new real-host migration or restoration receipt.
+
 ## Compact resource verification
 
 The compact profile uses a native clone-only 1824 MiB shared parent RAM pool,

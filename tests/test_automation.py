@@ -154,8 +154,15 @@ class FilesystemTests(unittest.TestCase):
         with self.assertRaises(rehearsal.RehearsalError):rehearsal.clone_private_tree(source,source/'copy')
     def test_private_state_permissions(self):
         state=transaction.private_root(self.root/'state');self.assertEqual(state.stat().st_mode&0o777,0o700)
-        (self.root/'public').mkdir(mode=0o755)
-        with self.assertRaises(rehearsal.RehearsalError):transaction.private_root(self.root/'public')
+        public=self.root/'public';public.mkdir(mode=0o755)
+        # mkdir's requested mode is masked by the installer's private umask.
+        public.chmod(0o755)
+        self.assertEqual(public.stat().st_mode&0o777,0o755)
+        with self.assertRaises(rehearsal.RehearsalError):transaction.private_root(public)
+    def test_private_state_permissions_under_private_umask(self):
+        previous=os.umask(0o077)
+        try:self.test_private_state_permissions()
+        finally:os.umask(previous)
     def test_state_symlink_rejected(self):
         self.root.joinpath('link').symlink_to(self.root,target_is_directory=True)
         with self.assertRaises(rehearsal.RehearsalError):transaction.private_root(self.root/'link')
