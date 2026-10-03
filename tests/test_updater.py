@@ -1,6 +1,7 @@
 """Regression checks using test-only HTTP responses and a recording Docker stub."""
 
 import contextlib
+import copy
 import datetime
 import io
 import os
@@ -57,6 +58,8 @@ class UpdaterTests(unittest.TestCase):
             'draft': False, 'prerelease': False,
         }
         self.docker = RecordingDocker()
+        self.extra_releases = []
+        self.release_pages = None
 
     def run_script(self, *args, http_error=False):
         replies = [Mock(), Mock()]
@@ -65,9 +68,24 @@ class UpdaterTests(unittest.TestCase):
         if http_error:
             replies[1].raise_for_status.side_effect = requests.HTTPError('fixture')
         output = io.StringIO()
+        def get_response(url, **kwargs):
+            if url.endswith('/api/server/version'):
+                return replies[0]
+            if url.endswith('/releases/latest'):
+                return replies[1]  # Reproduce the original latest-only bug.
+            if url == 'https://api.github.com/repos/immich-app/immich/releases':
+                page_number = kwargs.get('params', {}).get('page', 1)
+                pages = self.release_pages or [[self.release, *self.extra_releases]]
+                reply = Mock()
+                reply.json.return_value = pages[page_number - 1]
+                reply.links = {'next': {'url': 'fixture'}} if page_number < len(pages) else {}
+                reply.raise_for_status.side_effect = replies[1].raise_for_status.side_effect
+                return reply
+            raise AssertionError('Unexpected test HTTP URL: ' + url)
+
         argv = ['immich_updater.py', '--immich-dir', str(self.directory), *args]
         with patch('sys.argv', argv), patch.dict(os.environ, {'IMMICH_DIR': str(self.directory)}), \
-                patch('requests.get', side_effect=replies) as get, \
+                patch('requests.get', side_effect=get_response) as get, \
                 patch('sh.Command', return_value=self.docker), \
                 patch('datetime.datetime', FixedDatetime), \
                 contextlib.redirect_stdout(output):
@@ -159,6 +177,84 @@ class UpdaterTests(unittest.TestCase):
         with self.assertRaises(requests.HTTPError):
             self.run_script(http_error=True)
         self.assertEqual(self.docker.calls, [])
+
+    def release_fixture(self, tag, days_old, **overrides):
+        release = copy.deepcopy(self.release)
+        release.update(tag_name=tag,
+                       published_at=(NOW - datetime.timedelta(days=days_old)).isoformat(),
+                       draft=False, prerelease=False)
+        release.update(overrides)
+        return release
+
+    def test_young_latest_does_not_block_older_eligible_release(self):
+        self.release = self.release_fixture('v3.2.4', 1)
+        self.extra_releases = [self.release_fixture('v3.2.3', 8)]
+        code, _, _ = self.run_script()
+        self.assertEqual(code, 0)
+        self.assertEqual(self.docker.baked['_env']['IMMICH_VERSION'], 'v3.2.3')
+        self.assertIn(b'IMMICH_VERSION=v3.2.3\n', self.env.read_bytes())
+
+    def test_highest_eligible_version_wins_not_date_or_lexical_order(self):
+        self.release = self.release_fixture('v3.2.11', 1)
+        self.extra_releases = [self.release_fixture('v3.2.9', 8),
+                               self.release_fixture('v3.2.10', 9)]
+        self.run_script()
+        self.assertEqual(self.docker.baked['_env']['IMMICH_VERSION'], 'v3.2.10')
+
+    def test_next_release_updates_only_when_its_own_week_passes(self):
+        self.current.update(minor=2, patch=3)
+        self.release = self.release_fixture('v3.2.4', 6)
+        self.extra_releases = [self.release_fixture('v3.2.3', 10)]
+        self.run_script()
+        self.assertEqual(self.docker.calls, [])
+        self.release['published_at'] = (NOW - datetime.timedelta(days=7)).isoformat()
+        self.run_script()
+        self.assertEqual(self.docker.baked['_env']['IMMICH_VERSION'], 'v3.2.4')
+
+    def test_one_second_before_seven_days_is_not_eligible(self):
+        self.release['published_at'] = (NOW - datetime.timedelta(days=7)
+                                       + datetime.timedelta(seconds=1)).isoformat()
+        self.run_script()
+        self.assertEqual(self.docker.calls, [])
+
+    def test_prerelease_and_draft_do_not_hide_eligible_stable(self):
+        self.release = self.release_fixture('v3.3.0-rc.1', 9, prerelease=True)
+        self.extra_releases = [self.release_fixture('v3.2.5', 10, draft=True),
+                               self.release_fixture('v3.2.3', 8)]
+        self.run_script()
+        self.assertEqual(self.docker.baked['_env']['IMMICH_VERSION'], 'v3.2.3')
+
+    def test_pagination_can_find_an_older_eligible_release(self):
+        self.release_pages = [[self.release_fixture('v3.2.4', 1)],
+                              [self.release_fixture('v3.2.3', 8)]]
+        self.run_script()
+        self.assertEqual(self.docker.baked['_env']['IMMICH_VERSION'], 'v3.2.3')
+
+    def test_empty_release_list_does_not_update(self):
+        self.release_pages = [[]]
+        code, _, _ = self.run_script()
+        self.assertEqual(code, 0)
+        self.assertEqual(self.docker.calls, [])
+
+    def test_intermediate_breaking_change_blocks_skipping_that_release(self):
+        self.extra_releases = [self.release_fixture('v3.2.0', 9,
+                               body='Breaking change: manual configuration.')]
+        self.run_script()
+        self.assertEqual(self.docker.calls, [])
+        self.assertEqual((self.directory / 'BREAKING_CHANGE').read_text(), 'v3.2.0')
+
+    def test_younger_release_warning_does_not_block_eligible_target(self):
+        self.extra_releases = [self.release_fixture('v3.3.0', 1,
+                               body='Breaking change: future migration.')]
+        self.run_script()
+        self.assertEqual(self.docker.baked['_env']['IMMICH_VERSION'], 'v3.2.4')
+
+    def test_incomplete_history_fails_closed_at_page_limit(self):
+        self.release_pages = [[self.release] for _ in range(11)]
+        with self.assertRaisesRegex(RuntimeError, 'exceeds ten pages'):
+            self.run_script()
+        self.assertEqual(self.docker.calls, [])
+        self.assertEqual(self.env.read_bytes(), self.original)
 
 
 if __name__ == '__main__':

@@ -4,13 +4,14 @@ A small fork of [dpantel/immich-updater](https://github.com/dpantel/immich-updat
 
 ## Behaviour
 
-- Check the latest stable Immich release on GitHub.
-- Wait **seven full days after its publication** before installing it. A newer release starts a new waiting period; the script does not select an older release instead.
+- Read the stable Immich release history on GitHub and select the **highest version published at least seven full days ago**.
+- Each release has its own waiting period. A newer release does not reset or postpone an older eligible release: if `v3.2.3` is eight days old and `v3.2.4` is one day old, install `v3.2.3`. Once `v3.2.4` reaches seven days, it becomes eligible too.
+- If several releases are already eligible, install the highest version directly rather than replaying every intermediate version. Already installed or older versions are not reinstalled.
 - Pass the exact checked version to both `docker compose pull` and `docker compose up -d`.
 - After a successful pull, save the selected `IMMICH_VERSION` in the stack's `.env`. This keeps later manual Compose commands on the installed version.
 - Preserve the other `.env` settings and its ownership/permissions. Keep a mode-0600 backup named `.env.before-immich-updater-*` in the stack directory.
 - Do not automatically cross a major-version boundary, install a prerelease, or downgrade.
-- Keep the upstream breaking-change guard. `--dry-run` never changes files or Docker.
+- Keep the upstream text-based breaking-change guard and check intermediate stable releases on the upgrade path too. `--dry-run` never changes files or Docker.
 
 ## Requirements
 
@@ -62,7 +63,9 @@ journalctl -u immich-updater.service
 
 ## Safety and limitations
 
-The breaking-change check is inherited from upstream: it searches the latest release notes for the text `breaking change` when moving to another minor version. It can miss warnings in intermediate releases. A detected warning writes a `BREAKING_CHANGE` flag that blocks later automatic runs. After a reviewed manual update, remove that flag yourself.
+The breaking-change check searches stable release notes between the installed version and the selected target for the text `breaking change` when crossing a minor-version boundary. Repeated warnings inside the already installed minor version are ignored. This is a heuristic and can still miss differently worded migration requirements. A detected warning writes a `BREAKING_CHANGE` flag that blocks later automatic runs. After a reviewed manual update, remove that flag yourself.
+
+The release history is paginated and bounded to ten pages of 100 entries. An HTTP error, malformed publication timestamp, or history that cannot be fully scanned within that bound stops the update instead of installing an incompletely selected target.
 
 This script does **not** update Compose definitions, migrate PostgreSQL, back up the database/media, or guarantee that an eligible release is bug-free. Maintain a separate, tested Immich backup process and read the [official upgrade instructions](https://docs.immich.app/install/upgrading/). A `.env` backup is not a database backup. Those files can contain credentials; keep them private and never commit them.
 

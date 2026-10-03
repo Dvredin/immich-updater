@@ -1,17 +1,10 @@
 #!/usr/bin/python3
 
-"""Simple and dumb Immich server updater.
+"""Install the newest stable Immich version published at least seven days ago.
 
-Compares the current server version with the version of the latest release on
-Github. If there has been a major version update -OR- the release notes say
-"breaking change" (case-insensitive) anywhere, then it aborts. Otherwise, if
-there has been a version change, will do `docker pull`, `docker compose up -d`.
-
-Limitations:
-This script is DUMB. It's literally looking for a string in the release notes.
-Also, this script only looks at the notes of the LATEST release. That means
-that it needs to be run often (daily? weekly?) to make sure that it does not
-miss a "breaking change" release between runs.
+Newer, younger releases do not postpone eligible updates. Major upgrades and
+release notes containing "breaking change" across the upgrade path require
+manual review. The warning check is a text heuristic, not a safety guarantee.
 """
 
 import argparse
@@ -34,8 +27,7 @@ IMMICH_DIR = '/opt/immich'
 # Name of the file to create in IMMICH_DIR to signify a prior aborted update
 BREAKING_CHANGE_FLAG = 'BREAKING_CHANGE'
 
-# How many days do you want to wait after the latest release before you
-# update to it? (Allows the initial kinks to get worked out.)
+# Minimum age of each individual release before it can be installed.
 DELAY_DAYS = 7
 
 ############################
@@ -49,6 +41,39 @@ parser.add_argument('--dry-run', action='store_true',
 parser.add_argument('--verbose', action='store_true')
 args = parser.parse_args()
 IMMICH_DIR = args.immich_dir
+
+
+def release_version(release):
+    """Return a numeric stable version, excluding drafts and prereleases."""
+    if release.get('draft') or release.get('prerelease'):
+        return None
+    match = re.fullmatch(r'v([0-9]+)\.([0-9]+)\.([0-9]+)',
+                         release.get('tag_name', ''))
+    return tuple(map(int, match.groups())) if match else None
+
+
+def load_stable_releases():
+    """Read all pages; fail closed if a bounded scan cannot finish."""
+    releases = []
+    for page in range(1, 11):
+        response = requests.get(
+            'https://api.github.com/repos/immich-app/immich/releases',
+            params={'per_page': 100, 'page': page}, timeout=30)
+        response.raise_for_status()
+        rows = response.json()
+        if not isinstance(rows, list):
+            raise ValueError('GitHub did not return a release list.')
+        for release in rows:
+            version = release_version(release)
+            if version is not None and release.get('published_at'):
+                published = datetime.fromisoformat(
+                    release['published_at'].replace('Z', '+00:00'))
+                if published.tzinfo is None:
+                    raise ValueError('Release publication time has no timezone.')
+                releases.append((version, release, published))
+        if not response.links.get('next'):
+            return releases
+    raise RuntimeError('Release history exceeds ten pages; refusing an incomplete selection.')
 
 
 def persist_version(tag):
@@ -111,79 +136,50 @@ curr_vers = r.json()
 curr_vers_str = (f'v{curr_vers["major"]}.{curr_vers["minor"]}'
                  f'.{curr_vers["patch"]}')
 
-# Retrieve the latest release info from github.
-r = requests.get(
-    "https://api.github.com/repos/immich-app/immich/releases/latest",
-    allow_redirects=True, timeout=30)
-r.raise_for_status()
-release_data = r.json()
-
-# Extract release version from 'tag_name' or 'name'.
-# It will be a string in the form of 'v<major>.<minor>.<patch>'.
-latest_version_str = release_data['tag_name']
-if (release_data.get('draft') or release_data.get('prerelease')
-        or re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', latest_version_str) is None):
-    print('Immich-Updater: Not a stable release. Will not update.')
+# Choose the highest stable version whose own seven-day waiting period passed.
+stable_releases = load_stable_releases()
+cutoff = datetime.now(timezone.utc) - timedelta(days=DELAY_DAYS)
+eligible = [entry for entry in stable_releases if entry[2] <= cutoff]
+if not eligible:
+    if args.verbose or args.dry_run:
+        print(f'Immich-Updater: Current {curr_vers_str}; no stable release '
+              f'is at least {DELAY_DAYS} days old yet.')
     sys.exit(0)
-latest_version = latest_version_str.lstrip('v').split('.')
+target_version, release_data, _ = max(eligible, key=lambda entry: entry[0])
+target_version_str = release_data['tag_name']
+current_version = (curr_vers['major'], curr_vers['minor'], curr_vers['patch'])
 
 # If major version has changed, assume there will be breaking changes.
-if int(latest_version[0]) != int(curr_vers['major']):
+if target_version[0] != curr_vers['major']:
     print('Immich-Updater: Detected a major version change.'
           ' Will not proceed with the update. Currently-installed version:'
-          f' {curr_vers_str} / latest release: {latest_version_str}.')
+          f' {curr_vers_str} / newest eligible release: {target_version_str}.')
     sys.exit(0)
 
 # If no other changes, then can be done.
-if tuple(map(int, latest_version)) <= (
-        curr_vers['major'], curr_vers['minor'], curr_vers['patch']):
+if target_version <= current_version:
     if args.verbose or args.dry_run:
-        print(f'Immich-Updater: Already at {curr_vers_str} or newer.')
+        print(f'Immich-Updater: Current {curr_vers_str} is already at or newer '
+              f'than the newest eligible release {target_version_str}.')
     sys.exit(0)
 
-# If there has been a minor version change, then need to check the release
-# notes for a breaking changes.
-# Do not do this for a patch update only, because the "breaking..." warning is
-# repeated in patch updates if there was one in the minor update.
-if int(latest_version[1]) != int(curr_vers['minor']):
-    for line in release_data['body'].splitlines():
-        # Dumb regex search for literaly "breaking change".
-        # This has been a consistent pattern in the release notes for a while.
-        if re.search('breaking change', line, re.IGNORECASE) is not None:
-            # Create a breaking change flag file with the breaking version #
-            if not args.dry_run:
-                BCF.write_text(latest_version_str, encoding='utf-8')
-
-            print('Immich-Updater: A breaking change has been detected when'
-                  ' comparing the currently-installed version'
-                  f' ({curr_vers_str}) to the latest release'
-                  f' ({latest_version_str}). Will not proceed with the'
-                  f" update.\n\nRemember to delete the '{BCF}' file,"
-                  ' when updating manually.')
-            sys.exit(0)
-
-# One last check is the delay setting
-
-# Grab the release publish date, and convert to a datetime object.
-# Versions < 3.11 do not support TZ 'Z', so replace it with '+00:00'.
-release_DT = datetime.fromisoformat(
-    release_data['published_at'].replace('Z', '+00:00'))
-
-# Has enough time elapsed?
-if (datetime.now(timezone.utc) - release_DT).days < DELAY_DAYS:
-    # No. Abort.
-    if args.verbose or args.dry_run:
-        print(f'Immich-Updater: Current {curr_vers_str}; latest '
-              f'{latest_version_str}, published {release_data["published_at"]}. '
-              f'Waiting until {(release_DT + timedelta(days=DELAY_DAYS)).isoformat()}.')
-    sys.exit(0)
-
-# If we made it this far, then there has been an update and no breaking
-# changes have been detected. Ok to proceed with update.
+# Check intermediate releases too, since an upgrade may skip older versions.
+# Ignore repeated minor-upgrade warnings within the already installed minor.
+for version, release, _ in stable_releases:
+    if (current_version < version <= target_version
+            and version[1] != current_version[1]
+            and re.search('breaking change', release.get('body') or '', re.IGNORECASE)):
+        if not args.dry_run:
+            BCF.write_text(release['tag_name'], encoding='utf-8')
+        print('Immich-Updater: A breaking change has been detected in '
+              f'{release["tag_name"]} between {curr_vers_str} and '
+              f'{target_version_str}. Will not proceed with the update.\n\n'
+              f"Remember to delete '{BCF}' after a reviewed manual update.")
+        sys.exit(0)
 
 if args.dry_run:
     print(f'Immich-Updater: Dry run: would update {curr_vers_str} to '
-          f'{latest_version_str}, pin .env, and restart Docker Compose.')
+          f'{target_version_str}, pin .env, and restart Docker Compose.')
     sys.exit(0)
 
 # Refuse to start an update when its persistent version pin cannot be written.
@@ -195,11 +191,11 @@ if env_path.is_symlink() or not env_path.is_file():
 # Build a docker SH command
 docker = sh.Command('docker')
 docker = docker.bake(_cwd=IMMICH_DIR,
-                     _env={**os.environ, 'IMMICH_VERSION': latest_version_str})
+                     _env={**os.environ, 'IMMICH_VERSION': target_version_str})
 
 # pull
 print(
-    f'Immich-Updater: Updating from {curr_vers_str} to {latest_version_str}.')
+    f'Immich-Updater: Updating from {curr_vers_str} to {target_version_str}.')
 try:
     out = docker('compose', 'pull')
 except sh.ErrorReturnCode as e:
@@ -207,7 +203,7 @@ except sh.ErrorReturnCode as e:
 
 # Persist only after the selected images have been downloaded successfully.
 # Keep the selected version if startup fails; automatic downgrades are unsafe.
-persist_version(latest_version_str)
+persist_version(target_version_str)
 
 # reload
 print('Immich-Updater: Reloading server.')
