@@ -117,6 +117,13 @@ Activation requires the matching host receipt and unchanged installed code. `Per
 can trigger a missed run immediately. A `STOP` means do not enable the old timer manually;
 inspect the local preparation log. Python 3.10+, `python3-venv`, Git and the supported
 Docker/Compose installation must already be available; the installer does not upgrade Docker/OS.
+Package preparation prints `PACKAGE_STEP` for venv creation, dependency installation and
+unit tests. Each step saves stdout/stderr privately in the staging directory as
+`venv-create.log`, `dependency-install.log` or `package-tests.log`, including failures
+and partial timeout output. A failed step leaves the old updater in place, does not
+start rehearsal or enable the timer, and reports the exact local diagnostic path.
+Do not publish those logs wholesale; subsequent storage/application logs may contain
+resolved private configuration.
 
 ## Commands
 

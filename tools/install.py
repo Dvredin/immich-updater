@@ -51,6 +51,25 @@ def private(path, content):
         os.fsync(output.fileno())
 
 
+def logged_call(log_path, *arguments, **kwargs):
+    """Keep package-command diagnostics private even when the command fails."""
+    def text(value):
+        if isinstance(value, bytes):
+            return value.decode(errors='replace')
+        return value or ''
+
+    try:
+        result = call(*arguments, check=False, **kwargs)
+    except subprocess.TimeoutExpired as error:
+        private(log_path, text(error.stdout) + text(error.stderr))
+        raise StopInstall('Команда подготовки превысила время ожидания. Локальный журнал: ' + str(log_path)) from error
+    private(log_path, text(result.stdout) + text(result.stderr))
+    if result.returncode:
+        raise StopInstall('Команда подготовки не прошла (код ' + str(result.returncode)
+                          + '). Локальный журнал: ' + str(log_path))
+    return result
+
+
 PACKAGE_FILES = (
     '.gitignore', 'LICENSE', 'README.md', 'docs/REHEARSAL_VERIFICATION.md',
     'immich_updater.py', 'rehearsal.py', 'transaction.py', 'recovery_drill.py',
@@ -201,14 +220,13 @@ def install():
         path.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
         path.write_bytes(content)
         path.chmod(0o600)
-    try:
-        call('python3','-m','venv',str(staging/'.venv'),timeout=120)
-    except StopInstall:
-        raise StopInstall('Не удалось создать venv. Если отсутствует модуль: sudo apt-get install python3-venv. Таймер выключен.')
+    print('PACKAGE_STEP: venv', flush=True)
+    logged_call(staging/'venv-create.log','python3','-m','venv',str(staging/'.venv'),timeout=120)
     python = str(staging/'.venv/bin/python')
-    pip = call(python,'-m','pip','install','--disable-pip-version-check','--timeout','30','--retries','2','-r',str(staging/'requirements.txt'),timeout=900)
-    private(staging/'dependency-install.log',pip.stdout+pip.stderr)
-    result = call(python,'-m','unittest','discover','-s','tests','-q',cwd=str(staging),timeout=180)
+    print('PACKAGE_STEP: dependencies', flush=True)
+    logged_call(staging/'dependency-install.log',python,'-m','pip','install','--disable-pip-version-check','--timeout','30','--retries','2','-r',str(staging/'requirements.txt'),timeout=900)
+    print('PACKAGE_STEP: unit-tests', flush=True)
+    result = logged_call(staging/'package-tests.log',python,'-m','unittest','discover','-s','tests','-q',cwd=str(staging),timeout=180)
     print(result.stderr.strip(),flush=True)
     STATE.mkdir(mode=0o700,parents=True,exist_ok=True)
     if STATE.is_symlink() or STATE.stat().st_mode & 0o077:

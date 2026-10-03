@@ -17,6 +17,9 @@ class IsolationTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR'));self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name);self.root.chmod(0o700)
+        # Pure isolation fixtures must not depend on the installation host's RAM.
+        memory=patch('rehearsal.preflight_memory',return_value={'profile':'test-only'})
+        memory.start();self.addCleanup(memory.stop)
         for name in ('ensure_parent','release_parent'):
             mock=patch('rehearsal.'+name);mock.start();self.addCleanup(mock.stop)
         parent=patch('rehearsal.parent_slice',return_value='immichupdaterclone'+'a'*32+'.slice')

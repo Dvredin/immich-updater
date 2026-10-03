@@ -36,6 +36,17 @@ pre-start enforcement, stopped-service, functional-check timing, ENOMEM deferral
 worker readiness, teardown and documented kernel-accounting regressions. Compilation,
 installer self-test and whitespace checks also passed before publication.
 
+A later installer correction passed **162 tests**, including real package-command
+failure/timeout capture and simulated venv/dependency/test failure checks. The same
+suite passed with a simulated host `MemAvailable` of 1000 MiB: pure isolation fixtures
+no longer call the real host-memory gate. The production preflight and its explicit
+insufficient-memory regressions remain unchanged. Before this correction the scarce-RAM
+simulation reproduced one isolation-test error; that is an installer-test defect,
+not evidence that a real clone can be admitted with insufficient host RAM.
+Failed package steps now retain private diagnostics before raising, rather than
+discarding captured subprocess output. This does not establish which package step
+failed on any particular remote host and is not a new live migration/restore run.
+
 ## Compact resource verification
 
 The compact profile uses a native clone-only 1824 MiB shared parent RAM pool,

@@ -97,11 +97,13 @@ class InstallerTests(unittest.TestCase):
             return Mock(stdout='inactive\n',returncode=3 if args[1]=='is-active' else 0)
         with patch.multiple(module,call=call,DEST=self.dest,APP=self.app,STATE=self.state,READY=self.ready,prerequisites=Mock(side_effect=module.StopInstall('TEST insufficient RAM'))),contextlib.redirect_stdout(io.StringIO()),self.assertRaises(module.StopInstall):module.install()
         self.assertFalse(self.ready.exists());self.assertTrue(list(self.state.glob('install-ready.before-*.json')))
-    def install_simulated(self,prepared_output):
+    def install_simulated(self,prepared_output,failed_step=None):
         self.dest.mkdir();(self.dest/'old-marker').write_text('untouched')
-        calls=[]
+        calls=[];self.recorded_calls=calls
         def call(*args,**kwargs):
             calls.append(args)
+            if failed_step and '-m' in args and args[args.index('-m')+1]==failed_step:
+                return Mock(stdout='TEST-ONLY package stdout\n',stderr='TEST-ONLY package stderr\n',returncode=7)
             if args[:3]==('systemctl','show',module.SERVICE):
                 prop=args[3]
                 values={'--property=ActiveState':'inactive\n','--property=ExecStart':str(self.dest/'immich_updater.py')+' --state-dir /var/lib/immich-updater/state','--property=User':'root\n','--property=OnFailure':''}
@@ -134,23 +136,45 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue((self.root/'systemd'/'immich-updater.service.d'/'50-rehearsal-state.conf').is_file())
 
     def test_dependency_failure_prevents_code_swap_and_activation(self):
-        self.dest.mkdir();(self.dest/'old-marker').write_text('untouched')
-        calls=[]
-        def call(*args,**kwargs):
-            calls.append(args)
-            if args[:3]==('systemctl','show',module.SERVICE):return Mock(stdout='inactive\n',returncode=0)
-            if args[:2]==('systemctl','is-active'):return Mock(stdout='inactive\n',returncode=3)
-            if '-m' in args and 'pip' in args:raise module.StopInstall('TEST-only failed dependency')
-            return Mock(stdout='',stderr='',returncode=0)
-        # Only staging-directory creation is redirected; no real /opt or systemd writes.
-        real_path=Path
-        def path(*values):
-            if values==('/opt',):return self.root/'opt'
-            return real_path(*values)
-        (self.root/'opt').mkdir()
-        with patch.multiple(module,call=call,DEST=self.dest,APP=self.app,STATE=self.state,READY=self.ready,prerequisites=Mock(),Path=path),contextlib.redirect_stdout(io.StringIO()),self.assertRaises(module.StopInstall):module.install()
-        self.assertEqual((self.dest/'old-marker').read_text(),'untouched');self.assertFalse(self.ready.exists())
-        self.assertFalse(any(c[:2]==('systemctl','enable') for c in calls))
+        self.package_failure('pip','dependency-install.log')
+
+    def test_unit_test_failure_keeps_diagnostics_and_old_installation(self):
+        self.package_failure('unittest','package-tests.log')
+
+    def test_venv_failure_keeps_diagnostics_and_old_installation(self):
+        self.package_failure('venv','venv-create.log')
+
+    def package_failure(self,step,filename):
+        with self.assertRaises(module.StopInstall) as error:
+            self.install_simulated(good_receipt(),failed_step=step)
+        self.assertEqual((self.dest/'old-marker').read_text(),'untouched')
+        self.assertFalse(self.ready.exists())
+        self.assertFalse(any('--prepare-only' in args or args[:2]==('systemctl','enable')
+                             for args in self.recorded_calls))
+        self.assertEqual(list((self.root/'systemd').iterdir()),[])
+        log=next((self.root/'opt').glob('immich-updater.staging-*'))/filename
+        self.assertEqual(log.read_text(),'TEST-ONLY package stdout\nTEST-ONLY package stderr\n')
+        self.assertEqual(log.stat().st_mode&0o777,0o600)
+        self.assertIn(str(log),str(error.exception))
+        self.assertNotIn('TEST-ONLY package',str(error.exception))
+
+    def test_logged_real_subprocess_failure_is_private_and_preserved(self):
+        log=self.root/'command.log'
+        script="import sys;print('TEST-ONLY stdout');print('TEST-ONLY stderr',file=sys.stderr);sys.exit(7)"
+        with self.assertRaises(module.StopInstall) as error:
+            module.logged_call(log,sys.executable,'-I','-S','-c',script,timeout=10)
+        self.assertEqual(log.read_text(),'TEST-ONLY stdout\nTEST-ONLY stderr\n')
+        self.assertEqual(log.stat().st_mode&0o777,0o600)
+        self.assertIn(str(log),str(error.exception));self.assertNotIn('TEST-ONLY',str(error.exception))
+
+    def test_logged_real_subprocess_timeout_preserves_partial_output(self):
+        log=self.root/'timeout.log'
+        script="import sys,time;print('TEST-ONLY partial stdout',flush=True);print('TEST-ONLY partial stderr',file=sys.stderr,flush=True);time.sleep(30)"
+        with self.assertRaises(module.StopInstall) as error:
+            module.logged_call(log,sys.executable,'-I','-S','-c',script,timeout=0.5)
+        self.assertEqual(log.read_text(),'TEST-ONLY partial stdout\nTEST-ONLY partial stderr\n')
+        self.assertEqual(log.stat().st_mode&0o777,0o600)
+        self.assertIn(str(log),str(error.exception));self.assertNotIn('TEST-ONLY',str(error.exception))
 
     def test_revision_format_rejected_before_lookup(self):
         call=Mock()
