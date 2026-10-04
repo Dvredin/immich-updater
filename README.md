@@ -5,6 +5,10 @@ The current `single-stack-v1` workflow operates on **one running installation**:
 no parallel Immich, sampled library, migration rehearsal or automatic downgrade.
 Short downtime and owner intervention after a failed update are an explicit tradeoff.
 
+Internal architecture, installation/activation boundaries, read-only checks and
+failure handling: [operations runbook](docs/OPERATIONS.md). Synthetic evidence and
+real-host acceptance limits: [verification](docs/VERIFICATION.md).
+
 ## Automatic policy
 
 | Gate | Behaviour |
@@ -154,7 +158,7 @@ The monitor reuses an existing `notification_outbox.send` module through an expl
 are embedded in this repository. Run it on a different host if VM-wide failures must
 be observed. A sleeping/offline monitor host or failed Telegram path delays alerts.
 The monitor reports endpoint unavailability, not a proven server/migration cause.
-It never restarts or edits the application. [Verification](docs/REHEARSAL_VERIFICATION.md)
+It never restarts or edits the application. [Verification](docs/VERIFICATION.md)
 separates updater tests, synthetic migrations, notification delivery and real-host deployment.
 
 ## Verification and history
@@ -162,11 +166,28 @@ separates updater tests, synthetic migrations, notification delivery and real-ho
 ```bash
 .venv/bin/python -m unittest discover -s tests -q
 .venv/bin/python tools/install.py --self-test
-.venv/bin/python -m compileall -q immich_updater.py simple_update.py availability_monitor.py transaction.py tests tools
+.venv/bin/python -m compileall -q immich_updater.py simple_update.py compose_runtime.py availability_monitor.py transaction.py risk_checks.py tests tools archive
 ```
 
-Legacy rehearsal code/tests/receipts remain for history and recovery investigation.
-They are not the active controller or installer acceptance requirement.
+The active Compose transport is `compose_runtime.py`; `transaction.py` contains
+only state/image/candidate preparation, and `simple_update.py` owns application
+updates. Legacy rehearsal, resource/sample policy and full-state recovery live in
+[`archive/`](archive/README.md). Their 106 regressions live in `tests/legacy/` and
+run with repository-wide discovery, but are not installed. The installer packages
+21 files and 146 active tests; it excludes historical controllers, developer live
+fixtures and Pillow. No active module imports the archive. The full repository
+suite has 252 tests, retaining all 247 original tests plus five new transport and
+import-isolation checks.
+
+Developer style checks (formatter tooling is not a runtime dependency):
+
+```bash
+uvx ruff check .
+uvx ruff format --check .
+```
+
+Legacy source/test files are excluded through `pyproject.toml`; do not auto-format
+or remove them as though they were current runtime code.
 `tests/run_simple_live.py` exercises only explicitly synthetic data for developer
 acceptance; never point it at an existing deployment. Private fixtures, resolved
 configuration, credentials and DB dumps are never public repository artifacts.

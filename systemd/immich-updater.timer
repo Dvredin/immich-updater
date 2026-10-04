@@ -1,5 +1,5 @@
 [Unit]
-Description=Daily security-gated Immich upgrade rehearsal and full-state recovery
+Description=Daily security-gated single-stack Immich update
 
 [Timer]
 OnCalendar=*-*-* 09:35:00

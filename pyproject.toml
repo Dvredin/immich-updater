@@ -1,0 +1,6 @@
+[tool.ruff]
+target-version = "py310"
+extend-exclude = ["archive", "tests/legacy", "tools/archive"]
+
+[tool.ruff.lint]
+select = ["F"]

@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from risk_checks import log, version
-from resource_policy import (settings, preflight_memory, verify_containers, ResourceError,
+from archive.resource_policy import (settings, preflight_memory, verify_containers, ResourceError,
                              ResourceUnavailable, parent_slice, ensure_parent, release_parent, CLONE_LABEL, NODE_HEAP_MIB)
 
 NODE_HTTP = r"""
@@ -176,7 +176,7 @@ class Compose:
                 output.flush()
                 os.fsync(output.fileno())
             baseline = invariants(self, username, database, snapshot=snapshot)
-            from sample_rehearsal import candidates
+            from archive.sample_rehearsal import candidates
             private_json(destination.parent / 'sample-candidates.json',
                          candidates(self, username, database, snapshot))
         finally:
@@ -495,7 +495,7 @@ def rehearse(source_path, selected, state_root, candidate_path=None):
                 raise RehearsalError('Unsupported source mount.')
             if original == state_root or original in state_root.parents or state_root in original.parents:
                 raise RehearsalError('State root overlaps source mount; no capture permitted.')
-    from sample_rehearsal import capacity
+    from archive.sample_rehearsal import capacity
     capacity(source, state_root.parent if not state_root.exists() else state_root)
     memory = preflight_memory()  # reserve source/host RAM before capture or clone startup
     log('resource_check', **memory, production_mutations=False)
@@ -506,7 +506,7 @@ def rehearse(source_path, selected, state_root, candidate_path=None):
     sandbox.mkdir(mode=0o700)
     private_json(sandbox / 'source-config.json', config)
     username, database, baseline = source.capture_database(sandbox / 'database.dump')
-    from sample_rehearsal import sampled_mounts
+    from archive.sample_rehearsal import sampled_mounts
     rows = json.loads((sandbox / 'sample-candidates.json').read_text())
     mapping, sample = sampled_mounts(config, sandbox, rows)
     if baseline.get('assets', 0) and not sample['assets']:

@@ -21,7 +21,7 @@ PROFILE = 'sampled-media-v1'
 
 
 def candidates(compose, username, database, snapshot):
-    from rehearsal import RehearsalError
+    from archive.rehearsal import RehearsalError
     if not re.fullmatch(r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{8}-[0-9]+', snapshot):
         raise RehearsalError('Invalid sample snapshot.')
     # Same account as the authenticated probe. Only metadata, no full-library walk.
@@ -41,7 +41,7 @@ ORDER BY a."createdAt",a.id LIMIT ''' + str(CANDIDATES) + ') s;'
 
 
 def _safe_source(root, relative):
-    from rehearsal import RehearsalError
+    from archive.rehearsal import RehearsalError
     root = Path(root)
     relative = PurePosixPath(relative)
     if relative.is_absolute() or '..' in relative.parts or not relative.parts:
@@ -55,7 +55,7 @@ def _safe_source(root, relative):
 
 
 def _copy_file(source, destination, ceiling, *, confined_root=None):
-    from rehearsal import RehearsalError
+    from archive.rehearsal import RehearsalError
     # Open every source directory without following symlinks, then the leaf from
     # that anchored directory. A concurrent rename cannot redirect a photo read
     # into some other source tree between validation and open.
@@ -96,7 +96,7 @@ def _copy_file(source, destination, ceiling, *, confined_root=None):
 
 def sampled_mounts(config, sandbox, rows):
     """Create private empty mount roots, stock sentinels and a bounded file sample."""
-    from rehearsal import RehearsalError, private_json
+    from archive.rehearsal import RehearsalError, private_json
     sandbox = Path(sandbox)
     mapping = {}; targets = []
     for name, service in config['services'].items():
@@ -168,8 +168,8 @@ def sampled_mounts(config, sandbox, rows):
 
 def capacity(compose, state_dir):
     """Budget database copies/recovery and fixed media allowance, never all photos."""
-    from rehearsal import RehearsalError
-    from resource_policy import ResourceUnavailable
+    from archive.rehearsal import RehearsalError
+    from archive.resource_policy import ResourceUnavailable
     raw = compose.sql('SELECT pg_database_size(current_database());')
     if not isinstance(raw, str) or not re.fullmatch(r'[0-9]+', raw) or int(raw) <= 0:
         raise RehearsalError('Cannot verify database storage for sampled rehearsal.')

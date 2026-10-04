@@ -11,8 +11,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 import immich_updater as updater
-import resource_policy as resources
-import rehearsal
+from archive import resource_policy as resources
+from archive import rehearsal
 
 
 class ResourceTests(unittest.TestCase):
@@ -29,7 +29,7 @@ class ResourceTests(unittest.TestCase):
                            'memory.current':'1024','memory.peak':'2048'}.items():
             (self.parent/name).write_text(value)
         for name in ('ensure_parent','release_parent','wait_clone_workers'):
-            mock=patch('rehearsal.'+name);mock.start();self.addCleanup(mock.stop)
+            mock=patch('archive.rehearsal.'+name);mock.start();self.addCleanup(mock.stop)
         self.items = []
         for pid, (name, limit) in enumerate(resources.LIMIT_MIB.items(), 200):
             maximum = limit * resources.MIB
@@ -50,7 +50,7 @@ class ResourceTests(unittest.TestCase):
     def verify(self): return resources.verify_containers(self.items)
     def test_preflight_does_not_stop_or_write_source_on_pressure(self):
         source=Mock();source.config.return_value={'services':{}}
-        with patch('sample_rehearsal.capacity',return_value=1024),patch('rehearsal.Compose',return_value=source),patch('rehearsal.preflight_memory',side_effect=resources.ResourceUnavailable('test-only low RAM')):
+        with patch('archive.sample_rehearsal.capacity',return_value=1024),patch('archive.rehearsal.Compose',return_value=source),patch('archive.rehearsal.preflight_memory',side_effect=resources.ResourceUnavailable('test-only low RAM')):
             with self.assertRaises(resources.ResourceUnavailable):rehearsal.rehearse(self.root/'unused.yml','v3.2.4',self.root/'never-created')
         source.capture_database.assert_not_called();source.call.assert_not_called()
         self.assertFalse((self.root/'never-created').exists())
@@ -60,7 +60,7 @@ class ResourceTests(unittest.TestCase):
         (self.parent/'fixture-200'/'memory.events').write_text('oom 1\noom_kill 1\n')
         with self.assertRaises(resources.ResourceError):resources.verify_containers(self.items,require_running=True)
     def test_resource_check_repeated_after_functional_reads_and_cleanup(self):
-        import transaction
+        from archive import transaction
         stack=Mock();stack.config.return_value={'services':{
             'database':{'environment':{},'labels':{resources.CLONE_LABEL:'true'}}}}
         stack.path=self.root/'compose.json'
@@ -68,16 +68,16 @@ class ResourceTests(unittest.TestCase):
         def mutate(*args):
             (self.parent/'fixture-200'/'memory.events').write_text('oom 1\noom_kill 1\n')
             return {'authenticated_reads':True}
-        with patch('rehearsal.clone_resources',side_effect=inspect) as inspector,patch('transaction.invariants',return_value={}),patch('transaction.install_local_probe_key',return_value='test-only'),patch('transaction.functional_checks',side_effect=mutate),self.assertRaises(resources.ResourceError):
+        with patch('archive.rehearsal.clone_resources',side_effect=inspect) as inspector,patch('archive.transaction.invariants',return_value={}),patch('archive.transaction.install_local_probe_key',return_value='test-only'),patch('archive.transaction.functional_checks',side_effect=mutate),self.assertRaises(resources.ResourceError):
             transaction.runtime_checks(stack,'v3.2.4',{})
         self.assertEqual(inspector.call_count,2)
         self.assertTrue(stack.sql.called)  # local probe cleanup ran before final acceptance
     def test_clone_transaction_checks_created_containers_before_up(self):
-        import transaction
+        from archive import transaction
         stack=Mock();stack.path=self.root/('run-'+'a'*32)/'compose.json'
         stack.config.return_value={'services':{'database':{'labels':{resources.CLONE_LABEL:'true'}}}}
         events=[];stack.call.side_effect=lambda *args,**kwargs:events.append(args[0])
-        with patch('rehearsal.verify_isolation',side_effect=lambda *args:events.append('inspect')):
+        with patch('archive.rehearsal.verify_isolation',side_effect=lambda *args:events.append('inspect')):
             transaction.start_checked(stack,'up','-d','--force-recreate')
         self.assertEqual(events,['create','inspect','up','up','up'])
         self.assertNotIn('--force-recreate',stack.call.call_args.args)
@@ -86,22 +86,22 @@ class ResourceTests(unittest.TestCase):
         self.assertEqual(started[1][-1],'immich-server');self.assertIn('--no-deps',started[1])
         self.assertTrue(all('--no-recreate' in args for args in started))
     def test_clone_failed_create_inspection_never_starts(self):
-        import transaction
+        from archive import transaction
         stack=Mock();stack.path=self.root/('run-'+'a'*32)/'compose.json'
         stack.config.return_value={'services':{'database':{'labels':{resources.CLONE_LABEL:'true'}}}}
-        with patch('rehearsal.verify_isolation',side_effect=rehearsal.RehearsalError('test-only bad limit')),self.assertRaises(rehearsal.RehearsalError):
+        with patch('archive.rehearsal.verify_isolation',side_effect=rehearsal.RehearsalError('test-only bad limit')),self.assertRaises(rehearsal.RehearsalError):
             transaction.start_checked(stack,'up','-d')
         self.assertEqual([call.args[0] for call in stack.call.call_args_list],['create'])
     def test_nested_rollback_configuration_uses_original_rehearsal_root(self):
-        import transaction
+        from archive import transaction
         sandbox=self.root/('run-'+'b'*32)
         stack=Mock();stack.path=sandbox/'transactions'/'checkpoint-test'/'restore-probation.json'
         stack.config.return_value={'services':{'database':{'labels':{resources.CLONE_LABEL:'true'}}}}
-        with patch('rehearsal.verify_isolation') as inspector:
+        with patch('archive.rehearsal.verify_isolation') as inspector:
             transaction.start_checked(stack,'up','-d')
         inspector.assert_called_once_with(stack,sandbox)
     def test_clone_without_owned_private_root_refuses_before_creation(self):
-        import transaction
+        from archive import transaction
         stack=Mock();stack.path=self.root/'owner-compose.json'
         stack.config.return_value={'services':{'database':{'labels':{resources.CLONE_LABEL:'true'}}}}
         with self.assertRaises(rehearsal.RehearsalError):
@@ -109,31 +109,31 @@ class ResourceTests(unittest.TestCase):
         stack.call.assert_not_called()
 
     def test_production_start_does_not_recreate_or_apply_clone_policy(self):
-        import transaction
+        from archive import transaction
         stack=Mock();stack.config.return_value={'services':{'database':{}}}
-        with patch('rehearsal.verify_isolation') as inspector:
+        with patch('archive.rehearsal.verify_isolation') as inspector:
             transaction.start_checked(stack,'up','-d','--force-recreate')
         inspector.assert_not_called();self.assertEqual(stack.call.call_count,1)
         self.assertEqual(stack.call.call_args.args,('up','-d','--force-recreate'))
     def test_actual_clone_lifecycle_enomem_maps_to_transient_pressure(self):
         result=Mock(returncode=1,stderr=b'OCI runtime create failed: cannot allocate memory PRIVATE_SENTINEL',stdout=b'')
-        with patch('rehearsal.subprocess.run',return_value=result):
+        with patch('archive.rehearsal.subprocess.run',return_value=result):
             with self.assertRaises(resources.ResourceUnavailable) as failure:
                 rehearsal.run(['docker','compose','create'],resource_errors_transient=True)
         self.assertNotIn('PRIVATE_SENTINEL',str(failure.exception))
     def test_source_command_enomem_is_not_silent_resource_skip(self):
         result=Mock(returncode=1,stderr=b'OCI runtime create failed: cannot allocate memory',stdout=b'')
-        with patch('rehearsal.subprocess.run',return_value=result),self.assertRaises(rehearsal.RehearsalError):
+        with patch('archive.rehearsal.subprocess.run',return_value=result),self.assertRaises(rehearsal.RehearsalError):
             rehearsal.run(['docker','compose','up'])
     def test_clone_oom_exit_is_not_transient_allocator_error(self):
         result=Mock(returncode=137,stderr=b'container exited with OOMKilled',stdout=b'')
-        with patch('rehearsal.subprocess.run',return_value=result),self.assertRaises(rehearsal.RehearsalError):
+        with patch('archive.rehearsal.subprocess.run',return_value=result),self.assertRaises(rehearsal.RehearsalError):
             rehearsal.run(['docker','compose','up'],resource_errors_transient=True)
 
     def test_postgres_image_config_and_preload_arguments_preserved(self):
         default=['postgres','-c','config_file=/etc/postgresql/postgresql.conf']
         metadata=[{'Config':{'Cmd':default}}]
-        with patch('rehearsal.run',return_value=json.dumps(metadata).encode()):
+        with patch('archive.rehearsal.run',return_value=json.dumps(metadata).encode()):
             command=rehearsal.compact_postgres_command({'image':'sha256:test-only'})
         self.assertEqual(command[:len(default)],default)
         self.assertEqual(command[len(default):],['-c','shared_buffers=64MB','-c','work_mem=4MB','-c','maintenance_work_mem=64MB'])

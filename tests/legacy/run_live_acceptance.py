@@ -13,11 +13,11 @@ import tempfile
 import uuid
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rehearsal import Compose, RehearsalError, invariants, private_json, rehearse, run
-from transaction import apply, atomic_bytes, candidate_config, pinned
-from recovery_drill import restore_drill
+from archive.rehearsal import Compose, RehearsalError, invariants, private_json, rehearse, run
+from archive.transaction import apply, atomic_bytes, candidate_config, pinned
+from archive.recovery_drill import restore_drill
 from seed_live_fixture import seed
 
 
@@ -68,7 +68,7 @@ def acceptance(root, selected='v3.2.4', cgroup_parent=None):
         stack.call('up','-d','--wait','--wait-timeout','240',timeout=300)
         # Model an established installation, not a DB captured halfway through its
         # first-run geodata import. API health alone precedes worker readiness.
-        from rehearsal import wait_clone_workers
+        from archive.rehearsal import wait_clone_workers
         wait_clone_workers(stack)
         login={'email':'synthetic-acceptance@example.invalid','password':secrets.token_urlsafe(24),'name':'Synthetic acceptance'}
         signup=stack.api('/api/auth/admin-sign-up',method='POST',body=login)

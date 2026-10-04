@@ -5,9 +5,9 @@ import json
 import uuid
 from pathlib import Path
 
-from rehearsal import Compose, RehearsalError, invariants, private_json, rehearse, clone_resources, verify_isolation, start_clone_staged
-from resource_policy import preflight_memory, ensure_parent, release_parent
-from transaction import apply, atomic_bytes, pinned, private_root
+from archive.rehearsal import Compose, RehearsalError, invariants, private_json, rehearse, clone_resources, verify_isolation, start_clone_staged
+from archive.resource_policy import preflight_memory, ensure_parent, release_parent
+from archive.transaction import apply, atomic_bytes, pinned, private_root
 from risk_checks import log
 
 

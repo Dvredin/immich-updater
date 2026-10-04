@@ -8,9 +8,9 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-import sample_rehearsal as samples
-from rehearsal import RehearsalError
-from resource_policy import ResourceUnavailable
+from archive import sample_rehearsal as samples
+from archive.rehearsal import RehearsalError
+from archive.resource_policy import ResourceUnavailable
 
 
 class SampleTests(unittest.TestCase):
@@ -97,7 +97,7 @@ class SampleTests(unittest.TestCase):
         self.assertIn("SET TRANSACTION SNAPSHOT '00000001-00000001-1'",query)
         self.assertIn('LIMIT 64',query)
     def test_auth_probe_uses_sample_and_rejects_changed_original(self):
-        from rehearsal import functional_checks
+        from archive.rehearsal import functional_checks
         mapping,manifest=self.build();asset=self.identifier
         stack=Mock()
         def api(path,**kwargs):

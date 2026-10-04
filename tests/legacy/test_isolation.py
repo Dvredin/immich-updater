@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import immich_updater as updater
-import rehearsal
+from archive import rehearsal
 
 
 class IsolationTests(unittest.TestCase):
@@ -18,11 +18,11 @@ class IsolationTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR'));self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name);self.root.chmod(0o700)
         # Pure isolation fixtures must not depend on the installation host's RAM.
-        memory=patch('rehearsal.preflight_memory',return_value={'profile':'test-only'})
+        memory=patch('archive.rehearsal.preflight_memory',return_value={'profile':'test-only'})
         memory.start();self.addCleanup(memory.stop)
         for name in ('ensure_parent','release_parent'):
-            mock=patch('rehearsal.'+name);mock.start();self.addCleanup(mock.stop)
-        parent=patch('rehearsal.parent_slice',return_value='immichupdaterclone'+'a'*32+'.slice')
+            mock=patch('archive.rehearsal.'+name);mock.start();self.addCleanup(mock.stop)
+        parent=patch('archive.rehearsal.parent_slice',return_value='immichupdaterclone'+'a'*32+'.slice')
         parent.start();self.addCleanup(parent.stop)
         self.library=self.root/'files';self.library.mkdir()
         self.config={'services':{
@@ -44,7 +44,7 @@ class IsolationTests(unittest.TestCase):
         self.assertNotIn('SMTP_PASSWORD',server['environment'])
         self.assertEqual(server['image'],'ghcr.io/immich-app/immich-server:v3.2.4')
     def test_smaller_node_heap_is_clone_only(self):
-        import resource_policy
+        from archive import resource_policy
         result=self.build()
         self.assertEqual(resource_policy.NODE_HEAP_MIB,448)
         self.assertEqual(result['services']['immich-server']['environment']['NODE_OPTIONS'],'--max-old-space-size=448')
@@ -87,7 +87,7 @@ class IsolationTests(unittest.TestCase):
     def test_overlap_state_rejected_before_any_capture_or_write(self):
         config=copy.deepcopy(self.config);config['services']['immich-server']['volumes'][0]['source']=str(self.library)
         source=Mock();source.config.return_value=config;state=self.library/'updater-state'
-        with patch('rehearsal.Compose',return_value=source),self.assertRaises(rehearsal.RehearsalError):
+        with patch('archive.rehearsal.Compose',return_value=source),self.assertRaises(rehearsal.RehearsalError):
             rehearsal.rehearse(self.root/'unused.yml','v3.2.4',state)
         source.capture_database.assert_not_called();self.assertFalse(state.exists());self.assertEqual(list(self.library.iterdir()),[])
     def test_isolation_failure_after_create_prevents_any_start(self):
@@ -99,20 +99,20 @@ class IsolationTests(unittest.TestCase):
             (path.parent/'sample-candidates.json').write_text('[]')
             return 'postgres','immich',{}
         source.capture_database.side_effect=capture;clone=Mock()
-        with patch('sample_rehearsal.capacity',return_value=1024),patch('rehearsal.Compose',side_effect=[source,clone]),patch('rehearsal.verify_isolation',side_effect=rehearsal.RehearsalError('bad actual network')),self.assertRaises(rehearsal.RehearsalError):
+        with patch('archive.sample_rehearsal.capacity',return_value=1024),patch('archive.rehearsal.Compose',side_effect=[source,clone]),patch('archive.rehearsal.verify_isolation',side_effect=rehearsal.RehearsalError('bad actual network')),self.assertRaises(rehearsal.RehearsalError):
             rehearsal.rehearse(self.root/'unused.yml','v3.2.4',self.root/'runs')
         self.assertEqual([call.args[0] for call in clone.call.call_args_list],['create','down'])
     def test_runtime_host_port_detected(self):
         clone=Mock();clone.call.return_value=b'container';container={'HostConfig':{'PortBindings':{'2283/tcp':[{}]}},'Mounts':[],'NetworkSettings':{'Networks':{}}}
-        with patch('rehearsal.run',return_value=json.dumps([container]).encode()),self.assertRaises(rehearsal.RehearsalError):
+        with patch('archive.rehearsal.run',return_value=json.dumps([container]).encode()),self.assertRaises(rehearsal.RehearsalError):
             rehearsal.verify_isolation(clone,self.root)
     def test_runtime_nonisolated_network_detected(self):
         clone=Mock();clone.call.return_value=b'container';container={'HostConfig':{},'Mounts':[],'NetworkSettings':{'Networks':{'n':{'NetworkID':'id'}}}}
-        with patch('rehearsal.run',side_effect=[json.dumps([container]).encode(),json.dumps([{'Internal':True,'Options':{}}]).encode()]),self.assertRaises(rehearsal.RehearsalError):
+        with patch('archive.rehearsal.run',side_effect=[json.dumps([container]).encode(),json.dumps([{'Internal':True,'Options':{}}]).encode()]),self.assertRaises(rehearsal.RehearsalError):
             rehearsal.verify_isolation(clone,self.root)
     def test_runtime_production_mount_detected(self):
         clone=Mock();clone.call.return_value=b'container';container={'HostConfig':{},'Mounts':[{'Type':'bind','Source':'/fixture-production'}],'NetworkSettings':{'Networks':{}}}
-        with patch('rehearsal.run',return_value=json.dumps([container]).encode()),self.assertRaises(rehearsal.RehearsalError):
+        with patch('archive.rehearsal.run',return_value=json.dumps([container]).encode()),self.assertRaises(rehearsal.RehearsalError):
             rehearsal.verify_isolation(clone,self.root)
 
 
