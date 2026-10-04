@@ -129,7 +129,51 @@ class NodeTransportTests(unittest.TestCase):
         self.assertEqual(response['bytes'],0);self.assertEqual(response['sha256'],hashlib.sha256(b'').hexdigest())
 
 
-# Retired rehearsal-controller fixtures: archive/rehearsal-entrypoint-v1.py.
-# Current no-rehearsal execution regressions live in test_simple.py.
+class EntrypointTests(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR'));self.addCleanup(self.temp.cleanup)
+        self.root=Path(self.temp.name);(self.root/'compose.yml').write_text('fixture');(self.root/'.env').write_text('IMMICH_VERSION=v3.1.0\n')
+        self.args=updater.parser().parse_args(['--immich-dir',str(self.root),'--state-dir',str(self.root/'state')])
+        memory=patch('resource_policy.preflight_memory',return_value={'profile':'test-only'});memory.start();self.addCleanup(memory.stop)
+        capacity=patch('transaction.full_checkpoint_capacity',return_value=1024);capacity.start();self.addCleanup(capacity.stop)
+        compose=patch('rehearsal.Compose',return_value=Mock(config=Mock(return_value={})));compose.start();self.addCleanup(compose.stop)
+    def test_missing_full_production_checkpoint_defers_before_candidate_or_rehearsal(self):
+        from resource_policy import ResourceUnavailable
+        with patch('transaction.restore',return_value=None),patch('immich_updater.current_version',return_value=(3,1,0)),patch('immich_updater.choose',return_value=('v3.2.4',False)),patch('transaction.full_checkpoint_capacity',side_effect=ResourceUnavailable('test-only rollback storage')),patch('transaction.candidate_config') as candidate,patch('rehearsal.rehearse') as rehearse,patch('transaction.apply') as apply,contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(updater.run(self.args),0)
+        candidate.assert_not_called();rehearse.assert_not_called();apply.assert_not_called()
+        self.assertFalse((self.root/'state'/'quarantine.json').exists())
+        self.assertIn('defer_rollback_storage',output.getvalue())
+
+    def test_prepare_only_does_not_require_all_source_photo_copies(self):
+        self.args.prepare_only=True
+        with patch('transaction.restore',return_value=None),patch('immich_updater.current_version',return_value=(3,1,0)),patch('immich_updater.choose',return_value=('v3.2.4',False)),patch('transaction.full_checkpoint_capacity',side_effect=AssertionError('No production backup for sample testing')),patch('transaction.candidate_config',return_value='private-test-candidate'),patch('rehearsal.rehearse'),patch('recovery_drill.restore_drill'),patch('transaction.apply') as apply,contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(updater.run(self.args),0)
+        apply.assert_not_called()
+
+    def test_recovery_precedes_unavailable_source_api(self):
+        with patch('transaction.restore',return_value='restored') as restore,patch('immich_updater.current_version',side_effect=RuntimeError('should not run')) as current,contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(updater.run(self.args),0);restore.assert_called_once();current.assert_not_called()
+    def test_dry_run_creates_no_private_state_or_docker_work(self):
+        self.args.dry_run=True
+        with patch('immich_updater.current_version',return_value=(3,1,0)),patch('immich_updater.choose',return_value=('v3.2.4',False)),patch('transaction.candidate_config') as candidate,contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(updater.run(self.args),0);candidate.assert_not_called();self.assertFalse((self.root/'state').exists())
+    def test_prepare_only_rehearses_and_drills_without_source_apply(self):
+        self.args.prepare_only=True
+        with patch('immich_updater.current_version',return_value=(3,1,0)),patch('immich_updater.choose',return_value=('v3.2.4',False)),patch('transaction.restore',return_value=None),patch('transaction.candidate_config',return_value='private-candidate'),patch('rehearsal.rehearse') as rehearse,patch('recovery_drill.restore_drill') as drill,patch('transaction.apply') as apply,contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(updater.run(self.args),0);rehearse.assert_called_once();drill.assert_called_once();apply.assert_not_called()
+    def test_rehearsal_failure_quarantines_and_never_applies(self):
+        with patch('immich_updater.current_version',return_value=(3,1,0)),patch('immich_updater.choose',return_value=('v3.2.4',False)),patch('transaction.restore',return_value=None),patch('transaction.candidate_config',return_value='private-candidate'),patch('rehearsal.rehearse',side_effect=rehearsal.RehearsalError('failed clone')),patch('transaction.apply') as apply,contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(rehearsal.RehearsalError):updater.run(self.args)
+            apply.assert_not_called();self.assertIn('v3.2.4',json.loads((self.root/'state'/'quarantine.json').read_text()))
+    def test_prefetch_failure_does_not_permanently_quarantine_release(self):
+        with patch('immich_updater.current_version',return_value=(3,1,0)),patch('immich_updater.choose',return_value=('v3.2.4',False)),patch('transaction.restore',return_value=None),patch('transaction.candidate_config',side_effect=RuntimeError('temporary registry failure')),patch('transaction.apply') as apply,contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(RuntimeError):updater.run(self.args)
+            apply.assert_not_called();self.assertFalse((self.root/'state'/'quarantine.json').exists())
+    def test_recovery_drill_failure_never_applies(self):
+        with patch('immich_updater.current_version',return_value=(3,1,0)),patch('immich_updater.choose',return_value=('v3.2.4',False)),patch('transaction.restore',return_value=None),patch('transaction.candidate_config',return_value='private-candidate'),patch('rehearsal.rehearse'),patch('recovery_drill.restore_drill',side_effect=rehearsal.RehearsalError('failed recovery')),patch('transaction.apply') as apply,contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(rehearsal.RehearsalError):updater.run(self.args)
+            apply.assert_not_called()
+
 
 if __name__=='__main__':unittest.main()

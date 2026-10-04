@@ -1,5 +1,5 @@
 [Unit]
-Description=Rehearsed delayed Immich updates with full-state recovery (local logs only)
+Description=Delayed single-stack Immich update with DB/config backup
 Wants=network-online.target
 After=network-online.target docker.service
 StartLimitIntervalSec=2h
@@ -12,7 +12,6 @@ UMask=0077
 Environment=IMMICH_DIR=/opt/immich
 WorkingDirectory=/opt/immich-updater
 ExecStart=/usr/bin/flock -n /var/lib/immich-updater/update.lock /opt/immich-updater/.venv/bin/python /opt/immich-updater/immich_updater.py --immich-dir ${IMMICH_DIR} --verbose
-TimeoutStartSec=3h
-TimeoutStopSec=30min
-Restart=on-failure
-RestartSec=5min
+TimeoutStartSec=45min
+TimeoutStopSec=2min
+Restart=no

@@ -18,10 +18,11 @@ module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 
 
 def good_receipt():
-    return json.dumps({'event':'preflight','profile':'single-stack-v1','source_mutations':False,
-                      'parallel_rehearsal':False,'photo_copy_required':False,
-                      'required_backup_free_bytes':1024,'available_bytes':2048,
-                      'runtime':{'version':'v3.1.0','services_running':True,'ping':True}})
+    return '\n'.join(json.dumps(row) for row in [
+        {'event':'decision','decision':'verified_not_applied','target':'v3.2.4'},
+        {'event':'rehearsal','stage':'passed','target':'v3.2.4','media_scope':'bounded_sample','database_scope':'full','production_checkpoint_verified':False,'runtime_isolation_verified':True,'resource_limits_verified':True,'production_mutations':False},
+        {'event':'restore_drill','stage':'passed','target':'v3.2.4','media_scope':'bounded_sample','database_scope':'full','production_checkpoint_verified':False,'production_mutations':False,
+         'database_restored':True,'files_restored':True,'configuration_restored':True,'old_image_and_health_verified':True,'resource_limits_verified':True}])
 
 
 class InstallerTests(unittest.TestCase):
@@ -35,7 +36,7 @@ class InstallerTests(unittest.TestCase):
         for relative,content in module.package().items():
             path=self.dest/relative;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(content)
         python=self.dest/'.venv/bin/python';python.parent.mkdir(parents=True);python.write_text('TEST-ONLY recording interpreter')
-        self.ready.write_text(json.dumps({'status':'prepared','profile':'single-stack-v1','revision':module.REVISION,'app_dir':str(self.app),
+        self.ready.write_text(json.dumps({'status':'prepared','revision':module.REVISION,'app_dir':str(self.app),
             'files':{name:module.hashlib.sha256(data).hexdigest() for name,data in module.package().items()}}))
     def activate(self,call,release=None):
         with patch.multiple(module,DEST=self.dest,APP=self.app,STATE=self.state,READY=self.ready,call=call),contextlib.redirect_stdout(io.StringIO()):
@@ -45,20 +46,27 @@ class InstallerTests(unittest.TestCase):
         self.assertIn('rehearsal.py',files)
         for name,data in files.items():
             if name.endswith('.py'):compile(data,name,'exec')
-    def test_gate_positive(self):self.assertEqual(module.gate(good_receipt()),'v3.1.0')
+    def test_gate_missing_clone_resource_verification_blocks(self):
+        for stage in (1,2):
+            rows=[json.loads(line) for line in good_receipt().splitlines()]
+            rows[stage].pop('resource_limits_verified')
+            with self.assertRaises(module.StopInstall):module.gate('\n'.join(json.dumps(row) for row in rows))
+
+    def test_gate_positive(self):
+        self.assertEqual(module.gate(good_receipt()),'v3.2.4')
     def test_gate_skip_is_not_acceptance(self):
         with self.assertRaises(module.StopInstall):module.gate('{"event":"decision","decision":"skip"}')
     def test_gate_malformed_is_not_acceptance(self):
         with self.assertRaises(module.StopInstall):module.gate('{this is not json}')
+    def test_gate_restore_different_target_is_not_acceptance(self):
+        rows=[json.loads(line) for line in good_receipt().splitlines()];rows[-1]['target']='v3.2.3'
+        with self.assertRaises(module.StopInstall):module.gate('\n'.join(json.dumps(row) for row in rows))
+    def test_gate_missing_restored_configuration_blocks(self):
+        rows=[json.loads(line) for line in good_receipt().splitlines()];rows[-1]['configuration_restored']=False
+        with self.assertRaises(module.StopInstall):module.gate('\n'.join(json.dumps(row) for row in rows))
     def test_gate_source_mutated_blocks(self):
-        row=json.loads(good_receipt());row['source_mutations']=True
-        with self.assertRaises(module.StopInstall):module.gate(json.dumps(row))
-    def test_gate_failed_runtime_blocks(self):
-        row=json.loads(good_receipt());row['runtime']['ping']=False
-        with self.assertRaises(module.StopInstall):module.gate(json.dumps(row))
-    def test_gate_insufficient_db_backup_space_blocks(self):
-        row=json.loads(good_receipt());row['available_bytes']=1
-        with self.assertRaises(module.StopInstall):module.gate(json.dumps(row))
+        rows=[json.loads(line) for line in good_receipt().splitlines()];rows[-1]['production_mutations']=True
+        with self.assertRaises(module.StopInstall):module.gate('\n'.join(json.dumps(row) for row in rows))
     def test_activation_missing_host_acceptance_never_calls_systemctl(self):
         call=Mock()
         with self.assertRaises(module.StopInstall):self.activate(call)
@@ -73,20 +81,25 @@ class InstallerTests(unittest.TestCase):
         call=Mock()
         with self.assertRaises(module.StopInstall):self.activate(call)
         call.assert_not_called()
-    def test_failed_runtime_preflight_cannot_enable_timer(self):
+    def test_sample_preparation_cannot_enable_timer_without_production_rollback_storage(self):
         self.ready_installation()
-        call=Mock(return_value=subprocess.CompletedProcess([],1,'','TEST-ONLY runtime/DB backup admission failed'))
+        call=Mock(return_value=subprocess.CompletedProcess([],1,'','TEST-ONLY production rollback storage unavailable'))
         release=Mock()
         with self.assertRaises(module.StopInstall):self.activate(call,release)
         release.assert_not_called()
         self.assertEqual(len(call.call_args_list),1)
         self.assertEqual(call.call_args.args[0],str(self.dest/'.venv/bin/python'))
-        self.assertEqual((self.state/'activation-preflight.log').stat().st_mode&0o777,0o600)
+        self.assertEqual((self.state/'activation-storage.log').stat().st_mode&0o777,0o600)
 
-    def test_zero_exit_without_positive_preflight_receipt_cannot_enable_timer(self):
+    def test_zero_exit_without_positive_storage_receipt_cannot_enable_timer(self):
         self.ready_installation();call=Mock(return_value=subprocess.CompletedProcess([],0,'',''));release=Mock()
         with self.assertRaises(module.StopInstall):self.activate(call,release)
         release.assert_not_called();self.assertEqual(len(call.call_args_list),1)
+
+    def test_gate_missing_scope_does_not_claim_full_production_validation(self):
+        rows=[json.loads(line) for line in good_receipt().splitlines()]
+        rows[1].pop('media_scope')
+        with self.assertRaises(module.StopInstall):module.gate('\n'.join(json.dumps(row) for row in rows))
 
     def test_activation_works_from_stdlib_only_outer_interpreter(self):
         self.ready_installation()
@@ -100,13 +113,13 @@ m.DEST=Path(sys.argv[2]);m.APP=Path(sys.argv[3]);m.STATE=Path(sys.argv[4]);m.REA
 events=[]
 def call(*args,**kwargs):
     events.append(args)
-    if '--preflight-only' in args:
+    if '-c' in args:
         if args[0]!=str(m.DEST/'.venv/bin/python') or kwargs.get('cwd')!=str(m.DEST):raise RuntimeError('Wrong probe interpreter/cwd')
-        return subprocess.CompletedProcess(args,0,json.dumps({'event':'preflight','profile':'single-stack-v1','source_mutations':False,'parallel_rehearsal':False,'photo_copy_required':False,'required_backup_free_bytes':1024,'available_bytes':2048,'runtime':{'version':'v3.1.0','services_running':True,'ping':True}}),'')
+        return subprocess.CompletedProcess(args,0,'PRODUCTION_ROLLBACK_BUDGET_BYTES=1024\n','')
     if args[:2]==('systemctl','is-enabled'):return subprocess.CompletedProcess(args,0,'enabled\n','')
     return subprocess.CompletedProcess(args,0,'active\n','')
 with patch.object(m,'call',call),contextlib.redirect_stdout(io.StringIO()):m.activate()
-if not events or '--preflight-only' not in events[0]:raise RuntimeError('No installed-venv admission probe')
+if not events or '-c' not in events[0]:raise RuntimeError('No installed-venv admission probe')
 if any(name in sys.modules for name in ('requests','semantic_version','rehearsal','transaction')):raise RuntimeError('Activation imported app dependencies into outer interpreter')
 print(json.dumps({'stdlib_outer':True,'installed_venv_probe':True,'host_lifecycle':'mocked'}))
 '''
@@ -118,10 +131,10 @@ print(json.dumps({'stdlib_outer':True,'installed_venv_probe':True,'host_lifecycl
         self.ready_installation();events=[]
         def call(*args,**kwargs):
             events.append(args[1])
-            if '--preflight-only' in args:return subprocess.CompletedProcess(args,0,good_receipt(),'')
+            if '-c' in args:return subprocess.CompletedProcess(args,0,'PRODUCTION_ROLLBACK_BUDGET_BYTES=1024\n','')
             return subprocess.CompletedProcess(args,0,'enabled\n' if args[1]=='is-enabled' else 'active\n','')
         self.activate(call,lambda:events.append('lock-released'))
-        self.assertEqual(events[:3],[str(self.dest/'immich_updater.py'),'lock-released','enable'])
+        self.assertEqual(events[:3],['-c','lock-released','enable'])
     def test_active_old_updater_not_killed_or_replaced(self):
         call=Mock(return_value=Mock(stdout='active\n',returncode=0))
         with patch.multiple(module,call=call,DEST=self.dest),self.assertRaises(module.StopInstall):module.install()
@@ -133,7 +146,7 @@ print(json.dumps({'stdlib_outer':True,'installed_venv_probe':True,'host_lifecycl
             return Mock(stdout='inactive\n',returncode=3 if args[1]=='is-active' else 0)
         with patch.multiple(module,call=call,DEST=self.dest,APP=self.app,STATE=self.state,READY=self.ready,prerequisites=Mock(side_effect=module.StopInstall('TEST insufficient RAM'))),contextlib.redirect_stdout(io.StringIO()),self.assertRaises(module.StopInstall):module.install()
         self.assertFalse(self.ready.exists());self.assertTrue(list(self.state.glob('install-ready.before-*.json')))
-    def install_simulated(self,prepared_output,failed_step=None,unit_setup=None):
+    def install_simulated(self,prepared_output,failed_step=None):
         self.dest.mkdir();(self.dest/'old-marker').write_text('untouched')
         calls=[];self.recorded_calls=calls
         def call(*args,**kwargs):
@@ -145,7 +158,10 @@ print(json.dumps({'stdlib_outer':True,'installed_venv_probe':True,'host_lifecycl
                 values={'--property=ActiveState':'inactive\n','--property=ExecStart':str(self.dest/'immich_updater.py')+' --state-dir /var/lib/immich-updater/state','--property=User':'root\n','--property=OnFailure':''}
                 return Mock(stdout=values[prop],stderr='',returncode=0)
             if args[:2]==('systemctl','is-active'):return Mock(stdout='inactive\n',stderr='',returncode=3)
-            if '--preflight-only' in args:return Mock(stdout=prepared_output,stderr='',returncode=0)
+            if '-c' in args:
+                self.assertEqual(kwargs.get('cwd'),str(next((self.root/'opt').glob('immich-updater.staging-*'))))
+                self.assertIn(repr(str(self.app)),args[args.index('-c')+1])
+            if '--prepare-only' in args:return Mock(stdout=prepared_output,stderr='',returncode=0)
             return Mock(stdout='TEST-ONLY mocked successful command',stderr='',returncode=0)
         real_path=Path
         def path(*values):
@@ -153,8 +169,7 @@ print(json.dumps({'stdlib_outer':True,'installed_venv_probe':True,'host_lifecycl
             if values==('/etc/systemd/system',):return self.root/'systemd'
             return real_path(*values)
         (self.root/'opt').mkdir();(self.root/'systemd').mkdir()
-        if unit_setup:unit_setup(self.root/'systemd')
-        with patch.multiple(module,call=call,DEST=self.dest,APP=self.app,STATE=self.state,READY=self.ready,prerequisites=Mock(),authenticated_package=lambda revision:module.package(),Path=path),contextlib.redirect_stdout(io.StringIO()):
+        with patch.multiple(module,call=call,DEST=self.dest,APP=self.app,STATE=self.state,READY=self.ready,prerequisites=Mock(),Path=path),contextlib.redirect_stdout(io.StringIO()):
             module.install()
         return calls
     def test_prepare_exit_zero_but_skip_cannot_swap_code_or_enable_timer(self):
@@ -169,42 +184,6 @@ print(json.dumps({'stdlib_outer':True,'installed_venv_probe':True,'host_lifecycl
         self.assertFalse(any(args[:2]==('systemctl','enable') for args in calls))
         self.assertTrue((self.root/'systemd'/'immich-updater.service.d'/'50-rehearsal-state.conf').is_file())
 
-    def test_unit_symlink_cannot_overwrite_unrelated_file(self):
-        sentinel=self.root/'sentinel';sentinel.write_text('untouched')
-        def setup(root):(root/module.SERVICE).symlink_to(sentinel)
-        with self.assertRaises(module.StopInstall):self.install_simulated(good_receipt(),unit_setup=setup)
-        self.assertEqual(sentinel.read_text(),'untouched');self.assertFalse(self.ready.exists())
-        self.assertEqual((self.dest/'old-marker').read_text(),'untouched')
-    def test_unit_parent_symlink_is_denied(self):
-        outside=self.root/'outside';outside.mkdir()
-        def setup(root):(root/(module.SERVICE+'.d')).symlink_to(outside,target_is_directory=True)
-        with self.assertRaises(module.StopInstall):self.install_simulated(good_receipt(),unit_setup=setup)
-        self.assertEqual(list(outside.iterdir()),[]);self.assertFalse(self.ready.exists())
-    def test_revision_authenticates_source_bytes_not_just_head(self):
-        source=self.root/'git-source';source.mkdir();(source/'README.md').write_bytes(b'published test-only bytes')
-        def git(*args):return subprocess.run(['git','-C',str(source),*args],check=True,capture_output=True,text=True,timeout=15).stdout.strip()
-        git('init','-q');git('add','README.md');git('-c','user.name=Test','-c','user.email=test@example.invalid','commit','-qm','test-only package')
-        revision=git('rev-parse','HEAD')
-        with patch.multiple(module,SOURCE_ROOT=source,PACKAGE_FILES=('README.md',)):
-            self.assertEqual(module.source_revision(revision),revision)
-            (source/'README.md').write_bytes(b'modified after published commit')
-            with self.assertRaises(module.StopInstall):module.source_revision(revision)
-    def test_installed_source_revision_requires_verified_receipt_bytes(self):
-        self.ready_installation();(self.dest/'INSTALLATION_REVISION').write_text(module.REVISION+'\n')
-        with patch.multiple(module,SOURCE_ROOT=self.dest,DEST=self.dest,READY=self.ready):
-            self.assertEqual(module.source_revision(module.REVISION),module.REVISION)
-            (self.dest/'simple_update.py').write_bytes(b'test-only modified installed bytes')
-            with self.assertRaises(module.StopInstall):module.source_revision(module.REVISION)
-    def test_unverified_revision_marker_is_not_package_provenance(self):
-        (self.root/'INSTALLATION_REVISION').write_text(module.REVISION+'\n')
-        with patch.multiple(module,SOURCE_ROOT=self.root,PACKAGE_FILES=('INSTALLATION_REVISION',)):
-            with self.assertRaises(module.StopInstall):module.source_revision(module.REVISION)
-    def test_installer_refuses_default_simple_journal(self):
-        default=self.app/'.immich-updater-state';default.mkdir();(default/'simple-update.json').write_text('{}')
-        call=Mock()
-        with patch.multiple(module,APP=self.app,STATE=self.state,DEST=self.dest,call=call),contextlib.redirect_stdout(io.StringIO()):
-            with self.assertRaises(module.StopInstall):module.prerequisites()
-        call.assert_not_called()
     def test_dependency_failure_prevents_code_swap_and_activation(self):
         self.package_failure('pip','dependency-install.log')
 

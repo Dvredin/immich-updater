@@ -315,6 +315,32 @@ class ResourceTests(unittest.TestCase):
         self.assertIsNone(self.verify()['services']['immich-server']['kernel']['peak_bytes'])
 
 
-# Retired rehearsal admission entrypoint: archive/rehearsal-resource-entrypoint-v1.py.
+class EntryResourceTests(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR'));self.addCleanup(self.temp.cleanup)
+        self.root=Path(self.temp.name);(self.root/'compose.yml').write_text('test-only')
+        (self.root/'.env').write_text('IMMICH_VERSION=v3.1.0\n')
+        self.args=updater.parser().parse_args(['--immich-dir',str(self.root),'--state-dir',str(self.root/'state')])
+        capacity=patch('transaction.full_checkpoint_capacity',return_value=1024);capacity.start();self.addCleanup(capacity.stop)
+        compose=patch('rehearsal.Compose',return_value=Mock(config=Mock(return_value={})));compose.start();self.addCleanup(compose.stop)
+    def test_docker_enomem_after_preflight_is_not_release_quarantine(self):
+        def allocator_failure(*args,**kwargs):
+            return rehearsal.run(['docker','compose','create'],resource_errors_transient=True)
+        result=Mock(returncode=1,stderr=b'OCI runtime create failed: cannot allocate memory',stdout=b'')
+        with patch('transaction.restore',return_value=None),patch('immich_updater.current_version',return_value=(3,1,0)),patch('immich_updater.choose',return_value=('v3.2.4',False)),patch('resource_policy.preflight_memory',return_value={}),patch('transaction.candidate_config',return_value='test-only'),patch('rehearsal.rehearse',side_effect=allocator_failure),patch('rehearsal.subprocess.run',return_value=result),patch('transaction.apply') as apply,contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(updater.run(self.args),0)
+        apply.assert_not_called();self.assertFalse((self.root/'state'/'quarantine.json').exists())
+
+    def test_insufficient_memory_defers_without_pull_apply_or_quarantine(self):
+        with patch('transaction.restore',return_value=None),patch('immich_updater.current_version',return_value=(3,1,0)),patch('immich_updater.choose',return_value=('v3.2.4',False)),patch('resource_policy.preflight_memory',side_effect=resources.ResourceUnavailable('test-only pressure')),patch('transaction.candidate_config') as candidate,patch('transaction.apply') as apply,contextlib.redirect_stdout(io.StringIO()) as stdout:
+            self.assertEqual(updater.run(self.args),0)
+        candidate.assert_not_called();apply.assert_not_called()
+        self.assertIn('defer_resources',stdout.getvalue())
+        self.assertFalse((self.root/'state'/'quarantine.json').exists())
+    def test_late_host_pressure_defers_without_production_apply(self):
+        with patch('transaction.restore',return_value=None),patch('immich_updater.current_version',return_value=(3,1,0)),patch('immich_updater.choose',return_value=('v3.2.4',False)),patch('resource_policy.preflight_memory',return_value={}),patch('transaction.candidate_config',return_value='test-only'),patch('rehearsal.rehearse',side_effect=resources.ResourceUnavailable('test-only pressure')),patch('transaction.apply') as apply,contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(updater.run(self.args),0)
+        apply.assert_not_called();self.assertFalse((self.root/'state'/'quarantine.json').exists())
+
 
 if __name__ == '__main__': unittest.main()

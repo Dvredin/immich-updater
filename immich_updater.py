@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Automatic delayed Immich updates, isolated rehearsal and full-state recovery."""
+"""Delayed single-stack Immich updates with DB/config backup and post-start checks."""
 import argparse
 import fcntl
 import hashlib
@@ -168,77 +168,41 @@ def compose_file(directory, explicit):
 def run(args):
     directory = Path(args.immich_dir).resolve()
     state_dir = Path(args.state_dir).absolute() if args.state_dir else directory / '.immich-updater-state'
-    from transaction import apply, candidate_config, private_root, restore, state_save
-    from rehearsal import rehearse
-    from recovery_drill import restore_drill
+    from simple_update import apply, preflight, check_pending, require_upgrade
+    if args.preflight_only or args.prepare_only:
+        receipt = preflight(compose_file(directory,args.compose_file),state_dir)
+        log('preflight', **receipt)
+        return 0
     if not args.dry_run:
-        private_root(state_dir)
-        restored = restore(state_dir)  # BEFORE reading possibly-unavailable application API.
-        if restored:
-            log('decision', decision='recovered', reason='Interrupted transaction processed; no further upgrade this run.')
-            return 0
+        check_pending(compose_file(directory,args.compose_file),state_dir)
     as_of = stamp(args.as_of) if args.as_of else datetime.now(timezone.utc)
     current = current_version(args.server_url)
     quarantine_path = state_dir / 'quarantine.json'
     quarantine = json.loads(quarantine_path.read_text()) if quarantine_path.is_file() else {}
     log('check', installed=tag(current), as_of=as_of.isoformat(), dry_run=args.dry_run,
-        patch_days=PATCH_DAYS, feature_days=FEATURE_DAYS)
+        patch_days=PATCH_DAYS, feature_days=FEATURE_DAYS, profile='single-stack-v1')
     chosen = choose(GitHub(), current, as_of, quarantine)
     if chosen is None:
-        log('decision', installed=tag(current), decision='skip', target=None, reason='No newer candidate passed age/security gates.')
+        log('decision', installed=tag(current), decision='skip', target=None,
+            reason='No newer candidate passed age/security gates.')
         return 0
     selected, urgent = chosen
-    log('decision', installed=tag(current), decision='dry_run' if args.dry_run else 'rehearse',
-        target=selected, urgent=urgent)
+    log('decision', installed=tag(current), decision='dry_run' if args.dry_run else 'update',
+        target=selected, urgent=urgent, parallel_rehearsal=False)
     if args.dry_run:
         return 0
-    source_path = compose_file(directory, args.compose_file)
-    # Refuse unknown legacy failed-update state; never silently clear a migrated DB.
-    if (directory / 'UPDATE_FAILED').exists():
-        raise ValueError('Legacy failed-update marker requires recovery before this updater can take ownership.')
-    # Fetch/pull/preflight failures are infrastructure failures, not evidence of
-    # a bad release. Retry them later without permanently quarantining the tag.
-    from resource_policy import preflight_memory, ResourceUnavailable
-    try:
-        memory = preflight_memory()
-    except ResourceUnavailable as exc:
-        log('decision', decision='defer_resources', target=selected, reason=str(exc),
-            production_mutations=False, automatic_retry=True)
-        return 0
-    log('resource_check', **memory, production_mutations=False)
-    if not args.prepare_only:
-        from transaction import full_checkpoint_capacity
-        from rehearsal import Compose
-        try:
-            full_checkpoint_capacity(Compose(source_path).config(), state_dir)
-        except ResourceUnavailable as exc:
-            log('decision', decision='defer_rollback_storage', target=selected, reason=str(exc),
-                production_mutations=False, automatic_retry=True)
-            return 0
-    candidate = candidate_config(source_path, selected, state_dir / 'candidates')
-    try:
-        rehearse(source_path, selected, state_dir / 'rehearsals', candidate_path=candidate)
-        restore_drill(source_path, candidate, tag(current), selected, state_dir / 'restore-drills')
-        if args.prepare_only:
-            log('decision', decision='verified_not_applied', target=selected, production_mutations=False)
-            return 0
-        # Source advisories can change during a long rehearsal. No stale evidence fallback.
-        refreshed = GitHub()
-        advisories = refreshed.pages('/security-advisories', limit=3)
-        blocks, _ = advisory_risks(refreshed, advisories, selected)
-        if blocks:
-            raise ValueError('Candidate acquired an unresolved/serious security advisory during rehearsal.')
-        apply(source_path, candidate, selected, tag(current), state_dir)
-    except ResourceUnavailable as exc:
-        log('decision', decision='defer_resources', target=selected, reason=str(exc),
-            production_mutations=False, automatic_retry=True)
-        return 0
-    except BaseException as exc:
-        quarantine[selected] = {'installed': tag(current), 'error_type': type(exc).__name__,
-                                'recorded_at': datetime.now(timezone.utc).isoformat()}
-        state_save(quarantine_path, quarantine)
-        log('quarantine', target=selected, automatic_retry=False, error_type=type(exc).__name__)
-        raise
+    source_path = compose_file(directory,args.compose_file)
+    receipt = preflight(source_path,state_dir)
+    require_upgrade(receipt['runtime']['version'],tag(current),selected)
+    log('preflight', **receipt)
+    from transaction import candidate_config
+    candidate = candidate_config(source_path,selected,state_dir/'candidates',rehearsal_capacity=False)
+    # Re-read security immediately before downtime; pulls may have taken a while.
+    refreshed=GitHub()
+    blocks,_=advisory_risks(refreshed,refreshed.pages('/security-advisories',limit=3),selected)
+    if blocks:
+        raise ValueError('Candidate acquired an unresolved/serious security advisory.')
+    apply(source_path,candidate,selected,tag(current),state_dir)
     return 0
 
 
@@ -249,7 +213,8 @@ def parser():
     result.add_argument('--compose-file')
     result.add_argument('--state-dir', default=os.environ.get('IMMICH_UPDATER_STATE'))
     result.add_argument('--dry-run', action='store_true')
-    result.add_argument('--prepare-only', action='store_true', help='Run isolated upgrade and recovery tests only; never update source.')
+    result.add_argument('--preflight-only', action='store_true', help='Read-only runtime/DB-backup-space validation; no clones, pulls or update.')
+    result.add_argument('--prepare-only', action='store_true', help='Deprecated alias for read-only --preflight-only; never performs rehearsal.')
     result.add_argument('--verbose', action='store_true', help='Compatibility option: local decision logging is always enabled.')
     result.add_argument('--as-of', help='Forecast time with timezone; dry-run only.')
     return result
@@ -263,11 +228,11 @@ def main():
         parser().error('--prepare-only and --dry-run are mutually exclusive.')
     lock_fd = None
     try:
-        if not args.dry_run:
+        if not (args.dry_run or args.preflight_only or args.prepare_only):
             lock_fd = os.open(Path(args.immich_dir) / '.immich-updater.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             def terminate(signum, frame):
-                raise KeyboardInterrupt('Termination: transaction recovery required.')
+                raise KeyboardInterrupt('Termination: inspect durable update state before retry.')
             signal.signal(signal.SIGTERM, terminate)
         return run(args)
     except BlockingIOError:
@@ -278,7 +243,7 @@ def main():
             raise
         # Never expose Docker stderr, resolved configuration or request credentials.
         log('failure', error_type=type(exc).__name__, decision='fail_closed',
-            reason='Inspect private local receipts; no outbound notification.')
+            reason='Inspect private local receipts; external availability monitoring handles outage alerts.')
         return 1
     finally:
         if lock_fd is not None:

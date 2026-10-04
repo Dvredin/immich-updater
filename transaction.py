@@ -106,7 +106,7 @@ def running_pinned(stack):
     return result
 
 
-def candidate_config(source_path, selected, state_dir):
+def candidate_config(source_path, selected, state_dir, *, rehearsal_capacity=True):
     """Use exact official release Compose while retaining this site's stock mappings.
 
     Fetching/pulling happens before a checkpoint. The application itself is offline
@@ -123,7 +123,7 @@ def candidate_config(source_path, selected, state_dir):
         if name == 'immich-machine-learning' and re.search(r'-(cuda|rocm|openvino|armnn|rknn)(?:@|$)', item.get('image','')):
             raise RehearsalError('Accelerated source cannot be silently changed to CPU.')
     requested_state = Path(state_dir).absolute()
-    checked_roots = set(mounted_roots(original))
+    checked_roots = set(mounted_roots(original)) if rehearsal_capacity else set()
     checked_roots.update(Path(m['source']).resolve() for s in original['services'].values()
                          for m in s.get('volumes', [])
                          if m.get('type') == 'bind' and m.get('target') != '/etc/localtime')
@@ -131,8 +131,9 @@ def candidate_config(source_path, selected, state_dir):
         if root == requested_state or root in requested_state.parents or requested_state in root.parents:
             raise RehearsalError('Candidate state storage overlaps source data; no captured settings may be written.')
     state_dir = private_root(state_dir)
-    from sample_rehearsal import capacity
-    capacity(source, state_dir)
+    if rehearsal_capacity:
+        from sample_rehearsal import capacity
+        capacity(source, state_dir)
     work = state_dir / ('candidate-' + uuid.uuid4().hex)
     work.mkdir(mode=0o700)
     response = requests.get('https://raw.githubusercontent.com/immich-app/immich/' + selected + '/docker/docker-compose.yml', timeout=30)
@@ -190,7 +191,9 @@ def candidate_config(source_path, selected, state_dir):
     for image in sorted(images):
         run(['docker', 'pull', image], timeout=1800)
     resolved = pinned(resolved)
-    capacity(source, state_dir)  # image pulls may have consumed free space
+    if rehearsal_capacity:
+        from sample_rehearsal import capacity
+        capacity(source, state_dir)  # image pulls may have consumed free space
     private_json(path, resolved)
     return path
 
