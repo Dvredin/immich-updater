@@ -1,0 +1,323 @@
+{
+  "actual_nonempty_upgrade": true,
+  "candidate_before_rollback_resources": {
+    "child_ceiling_sum_bytes": 2986344448,
+    "parent": {
+      "current_bytes": 1716785152,
+      "kernel_limit_bytes": 1811939328,
+      "oom_events": 0,
+      "peak_bytes": 1812090880,
+      "swap_limit_bytes": 0
+    },
+    "profile": "compact-4g-v3",
+    "services": {
+      "database": {
+        "kernel": {
+          "current_bytes": 532652032,
+          "kernel_limit_bytes": 1073741824,
+          "oom_events": 0,
+          "peak_bytes": 664621056,
+          "swap_limit_bytes": 0
+        },
+        "limit_bytes": 1073741824
+      },
+      "immich-machine-learning": {
+        "kernel": {
+          "current_bytes": 249311232,
+          "kernel_limit_bytes": 402653184,
+          "oom_events": 0,
+          "peak_bytes": 275251200,
+          "swap_limit_bytes": 0
+        },
+        "limit_bytes": 402653184
+      },
+      "immich-server": {
+        "kernel": {
+          "current_bytes": 926150656,
+          "kernel_limit_bytes": 1476395008,
+          "oom_events": 0,
+          "peak_bytes": 1309716480,
+          "swap_limit_bytes": 0
+        },
+        "limit_bytes": 1476395008
+      },
+      "redis": {
+        "kernel": {
+          "current_bytes": 8491008,
+          "kernel_limit_bytes": 33554432,
+          "oom_events": 0,
+          "peak_bytes": 15056896,
+          "swap_limit_bytes": 0
+        },
+        "limit_bytes": 33554432
+      }
+    },
+    "swap_disabled": true,
+    "total_limit_bytes": 1811939328
+  },
+  "destructive_full_state_restore": "passed",
+  "existing_password_login_verified": true,
+  "limits": {
+    "clone_budget_MiB": 1728,
+    "clone_node_heap_MiB": 448,
+    "host_reserve_MiB": 256,
+    "required_available_MiB": 1984
+  },
+  "outer_containers": {
+    "actual_PID_ancestry_services": [
+      "database",
+      "immich-machine-learning",
+      "immich-server",
+      "redis"
+    ],
+    "ancestry_errors": [],
+    "controller_and_host_OS_outside_outer_cap": true,
+    "exit_code": 0,
+    "outer_limit_bytes": 4294967296,
+    "outer_oom_events": 0,
+    "outer_oom_kills": 0,
+    "outer_peak_bytes": 3686952960,
+    "outer_swap_limit_bytes": 0,
+    "stage": "passed"
+  },
+  "owner_production_accessed": false,
+  "profile": "compact-4g-v3",
+  "rehearsal_runs": [
+    {
+      "checks": {
+        "authenticated_reads": true,
+        "clone_album_write": true,
+        "sample_asset_read": true,
+        "version": "v3.2.4"
+      },
+      "database_dump_bytes": 18400882,
+      "resources": {
+        "child_ceiling_sum_bytes": 2986344448,
+        "parent": {
+          "current_bytes": 1785188352,
+          "kernel_limit_bytes": 1811939328,
+          "oom_events": 0,
+          "peak_bytes": 1812197376,
+          "swap_limit_bytes": 0
+        },
+        "profile": "compact-4g-v3",
+        "services": {
+          "database": {
+            "kernel": {
+              "current_bytes": 453771264,
+              "kernel_limit_bytes": 1073741824,
+              "oom_events": 0,
+              "peak_bytes": 641458176,
+              "swap_limit_bytes": 0
+            },
+            "limit_bytes": 1073741824
+          },
+          "immich-machine-learning": {
+            "kernel": {
+              "current_bytes": 230408192,
+              "kernel_limit_bytes": 402653184,
+              "oom_events": 0,
+              "peak_bytes": 258408448,
+              "swap_limit_bytes": 0
+            },
+            "limit_bytes": 402653184
+          },
+          "immich-server": {
+            "kernel": {
+              "current_bytes": 1086214144,
+              "kernel_limit_bytes": 1476395008,
+              "oom_events": 0,
+              "peak_bytes": 1273335808,
+              "swap_limit_bytes": 0
+            },
+            "limit_bytes": 1476395008
+          },
+          "redis": {
+            "kernel": {
+              "current_bytes": 14680064,
+              "kernel_limit_bytes": 33554432,
+              "oom_events": 0,
+              "peak_bytes": 22781952,
+              "swap_limit_bytes": 0
+            },
+            "limit_bytes": 33554432
+          }
+        },
+        "swap_disabled": true,
+        "total_limit_bytes": 1811939328
+      },
+      "sample": {
+        "copied_bytes": 725,
+        "copied_files": 1,
+        "database_scope": "full",
+        "max_bytes": 134217728,
+        "max_files": 16,
+        "media_scope": "bounded_sample",
+        "ml_cache_scope": "empty",
+        "production_checkpoint": false,
+        "profile": "sampled-media-v1"
+      },
+      "target": "v3.2.4"
+    },
+    {
+      "checks": {
+        "authenticated_reads": true,
+        "clone_album_write": true,
+        "sample_asset_read": true,
+        "version": "v3.1.0"
+      },
+      "database_dump_bytes": 18400882,
+      "resources": {
+        "child_ceiling_sum_bytes": 2986344448,
+        "parent": {
+          "current_bytes": 1655349248,
+          "kernel_limit_bytes": 1811939328,
+          "oom_events": 0,
+          "peak_bytes": 1684193280,
+          "swap_limit_bytes": 0
+        },
+        "profile": "compact-4g-v3",
+        "services": {
+          "database": {
+            "kernel": {
+              "current_bytes": 411394048,
+              "kernel_limit_bytes": 1073741824,
+              "oom_events": 0,
+              "peak_bytes": 428486656,
+              "swap_limit_bytes": 0
+            },
+            "limit_bytes": 1073741824
+          },
+          "immich-machine-learning": {
+            "kernel": {
+              "current_bytes": 304205824,
+              "kernel_limit_bytes": 402653184,
+              "oom_events": 0,
+              "peak_bytes": 330899456,
+              "swap_limit_bytes": 0
+            },
+            "limit_bytes": 402653184
+          },
+          "immich-server": {
+            "kernel": {
+              "current_bytes": 933773312,
+              "kernel_limit_bytes": 1476395008,
+              "oom_events": 0,
+              "peak_bytes": 963502080,
+              "swap_limit_bytes": 0
+            },
+            "limit_bytes": 1476395008
+          },
+          "redis": {
+            "kernel": {
+              "current_bytes": 5599232,
+              "kernel_limit_bytes": 33554432,
+              "oom_events": 0,
+              "peak_bytes": 6168576,
+              "swap_limit_bytes": 0
+            },
+            "limit_bytes": 33554432
+          }
+        },
+        "swap_disabled": true,
+        "total_limit_bytes": 1811939328
+      },
+      "sample": {
+        "copied_bytes": 725,
+        "copied_files": 1,
+        "database_scope": "full",
+        "max_bytes": 134217728,
+        "max_files": 16,
+        "media_scope": "bounded_sample",
+        "ml_cache_scope": "empty",
+        "production_checkpoint": false,
+        "profile": "sampled-media-v1"
+      },
+      "target": "v3.1.0"
+    }
+  ],
+  "restore_drill": {
+    "configuration_restored": true,
+    "database_restored": true,
+    "database_scope": "full",
+    "files_restored": true,
+    "installed": "v3.1.0",
+    "media_scope": "bounded_sample",
+    "old_image_and_health_verified": true,
+    "post_migration_failure_injected": true,
+    "production_checkpoint_verified": false,
+    "production_mutations": false,
+    "resource_limits_verified": true,
+    "stage": "passed",
+    "target": "v3.2.4"
+  },
+  "restored_old_runtime_resources": {
+    "child_ceiling_sum_bytes": 2986344448,
+    "parent": {
+      "current_bytes": 1292566528,
+      "kernel_limit_bytes": 1811939328,
+      "oom_events": 0,
+      "peak_bytes": 1812090880,
+      "swap_limit_bytes": 0
+    },
+    "profile": "compact-4g-v3",
+    "services": {
+      "database": {
+        "kernel": {
+          "current_bytes": 44961792,
+          "kernel_limit_bytes": 1073741824,
+          "oom_events": 0,
+          "peak_bytes": 61386752,
+          "swap_limit_bytes": 0
+        },
+        "limit_bytes": 1073741824
+      },
+      "immich-machine-learning": {
+        "kernel": {
+          "current_bytes": 289943552,
+          "kernel_limit_bytes": 402653184,
+          "oom_events": 0,
+          "peak_bytes": 315588608,
+          "swap_limit_bytes": 0
+        },
+        "limit_bytes": 402653184
+      },
+      "immich-server": {
+        "kernel": {
+          "current_bytes": 886132736,
+          "kernel_limit_bytes": 1476395008,
+          "oom_events": 0,
+          "peak_bytes": 904392704,
+          "swap_limit_bytes": 0
+        },
+        "limit_bytes": 1476395008
+      },
+      "redis": {
+        "kernel": {
+          "current_bytes": 5177344,
+          "kernel_limit_bytes": 33554432,
+          "oom_events": 0,
+          "peak_bytes": 6479872,
+          "swap_limit_bytes": 0
+        },
+        "limit_bytes": 33554432
+      }
+    },
+    "swap_disabled": true,
+    "total_limit_bytes": 1811939328
+  },
+  "source": "v3.1.0",
+  "source_checks": {
+    "authenticated_reads": true,
+    "clone_album_write": true,
+    "sample_asset_read": true,
+    "version": "v3.2.4"
+  },
+  "source_metadata_preserved": true,
+  "stage": "passed",
+  "storage": "native-ext4-disk",
+  "synthetic_fixture": true,
+  "target": "v3.2.4",
+  "target_host_prepared": false,
+  "version_pin_persisted": true
+}

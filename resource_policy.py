@@ -4,12 +4,13 @@ import re
 import subprocess
 
 MIB = 1024 * 1024
-PROFILE = 'compact-4g-v2'
+PROFILE = 'compact-4g-v3'
 # Services borrow idle capacity within ONE smaller, enforced parent pool.
 LIMIT_MIB = {'immich-server': 1408, 'database': 1024,
              'immich-machine-learning': 384, 'redis': 32}
-CLONE_BUDGET_MIB = 1824
+CLONE_BUDGET_MIB = 1728
 HOST_RESERVE_MIB = 256
+NODE_HEAP_MIB = 448
 CLONE_LABEL = 'io.immich-updater.rehearsal'
 PROC_ROOT = Path('/proc')
 CGROUP_ROOT = Path('/sys/fs/cgroup')

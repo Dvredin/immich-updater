@@ -233,13 +233,21 @@ class ResourceTests(unittest.TestCase):
         control.assert_not_called()
 
     def test_exact_total_compact_budget(self):
-        self.assertEqual(resources.CLONE_BUDGET_MIB,1824)
+        self.assertEqual(resources.CLONE_BUDGET_MIB,1728)
+        self.assertEqual(resources.HOST_RESERVE_MIB,256)
+        self.assertEqual(resources.PROFILE,'compact-4g-v3')
         self.assertGreater(sum(resources.LIMIT_MIB.values()),resources.CLONE_BUDGET_MIB)
-        self.assertEqual(resources.preflight_memory(2134 * resources.MIB)['required_available_MiB'],2080)
+        self.assertEqual(resources.preflight_memory(2134 * resources.MIB)['required_available_MiB'],1984)
+    def test_observed_owner_available_memory_passes_with_reserve_intact(self):
+        for available in (2053,2058):
+            result=resources.preflight_memory(available * resources.MIB)
+            self.assertEqual(result['clone_budget_MiB'],1728)
+            self.assertEqual(result['host_reserve_MiB'],256)
+            self.assertEqual(result['required_available_MiB'],1984)
     def test_exact_available_boundary_passes(self):
-        self.assertEqual(resources.preflight_memory(2080 * resources.MIB)['available_memory_MiB'],2080)
+        self.assertEqual(resources.preflight_memory(1984 * resources.MIB)['available_memory_MiB'],1984)
     def test_one_byte_under_boundary_defers(self):
-        with self.assertRaises(resources.ResourceUnavailable): resources.preflight_memory(2080 * resources.MIB - 1)
+        with self.assertRaises(resources.ResourceUnavailable): resources.preflight_memory(1984 * resources.MIB - 1)
     def test_real_meminfo_parse(self):
         (self.proc / 'meminfo').write_text('MemTotal: 4000000 kB\nMemAvailable: 2185216 kB\n')
         self.assertEqual(resources.memory_available(),2185216 * 1024)
@@ -256,7 +264,7 @@ class ResourceTests(unittest.TestCase):
         with self.assertRaises(resources.ResourceError): resources.settings('unknown')
     def test_running_kernel_limits_and_counters_verified(self):
         result = self.verify()
-        self.assertEqual(result['total_limit_bytes'],1824 * resources.MIB)
+        self.assertEqual(result['total_limit_bytes'],1728 * resources.MIB)
         self.assertTrue(result['swap_disabled'])
         self.assertTrue(all(row['kernel']['oom_events']==0 for row in result['services'].values()))
     def test_create_time_verification_does_not_read_nonexistent_pid(self):

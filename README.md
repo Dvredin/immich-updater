@@ -43,8 +43,16 @@ There is downtime during the fresh production checkpoint and the production upda
 
 ## Compact rehearsal on a 4 GiB host
 
+The current `compact-4g-v3` profile reduces the actual enforced clone pool by
+96 MiB versus v2, together with a smaller clone-only Node heap. The separate
+256 MiB host/controller reserve is unchanged; this is not a waived memory gate.
+Real target-host preparation is still required before activation. The smaller profile
+passed a fresh native-ext4 synthetic migration and destructive clone restore under
+an outer 4 GiB container cap with zero swap/OOM; the controller/host OS were outside
+that cap. See [verification boundaries](docs/REHEARSAL_VERIFICATION.md).
+
 Rehearsal and recovery copies run sequentially. Each copy has its own native
-systemd/cgroup-v2 parent pool with a **1824 MiB total hard RAM limit**, zero swap,
+systemd/cgroup-v2 parent pool with a **1728 MiB total hard RAM limit**, zero swap,
 and these additional child ceilings:
 
 | Clone service | Individual ceiling |
@@ -55,7 +63,7 @@ and these additional child ceilings:
 | Redis | 32 MiB |
 
 Child ceilings intentionally sum to more than the shared pool: a service can borrow
-currently unused capacity, but the complete clone cannot exceed **1824 MiB**.
+currently unused capacity, but the complete clone cannot exceed **1728 MiB**.
 This avoids reserving idle RAM for one service while another OOMs during startup.
 Within each clone, PostgreSQL/Redis start first, then the stock server starts with
 ML still stopped. HTTP health alone is insufficient: ML starts only after the stock
@@ -72,13 +80,13 @@ separate from the configured clone pool.
 Both parent and child enforcement, kernel ancestry and OOM counters must pass.
 Temporary pool settings apply only to the clone, never production or a global slice.
 
-The preflight requires **2080 MiB available RAM**: the shared clone pool plus a 256 MiB
+The preflight requires **1984 MiB available RAM**: the shared clone pool plus a 256 MiB
 host/controller reserve. This replaces the former fixed 6 GiB free-RAM gate, not the
 rehearsal or recovery gates. Current source containers and their resource policy are
 not modified. Source resource/cgroup settings are retained during the eventual update.
 
 Every clone has swap disabled, no automatic restart and increased OOM-victim priority.
-The clone server uses the supported Node `--max-old-space-size=512` heap ceiling
+The clone server uses the supported Node `--max-old-space-size=448` heap ceiling
 per Node process; this does not change production environment or worker topology.
 Clone PostgreSQL retains its original/image startup arguments and appends only
 `shared_buffers=64MB`, `work_mem=4MB`, `maintenance_work_mem=64MB`; image preload

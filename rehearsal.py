@@ -20,7 +20,7 @@ from pathlib import Path
 
 from risk_checks import log, version
 from resource_policy import (settings, preflight_memory, verify_containers, ResourceError,
-                             ResourceUnavailable, parent_slice, ensure_parent, release_parent, CLONE_LABEL)
+                             ResourceUnavailable, parent_slice, ensure_parent, release_parent, CLONE_LABEL, NODE_HEAP_MIB)
 
 NODE_HTTP = r"""
 let s='';for await(const b of process.stdin)s+=b;
@@ -227,7 +227,7 @@ def build_isolated(config, sandbox: Path, selected, mount_map, password):
             env = {'DB_PASSWORD': password, 'DB_USERNAME': db_user, 'DB_DATABASE_NAME': db_name,
                    'DB_HOSTNAME': 'database', 'DB_PORT': '5432', 'REDIS_HOSTNAME': 'redis',
                    'IMMICH_MACHINE_LEARNING_URL': 'http://immich-machine-learning:3003',
-                   'NODE_OPTIONS': '--max-old-space-size=512'}
+                   'NODE_OPTIONS': '--max-old-space-size=' + str(NODE_HEAP_MIB)}
         elif name == 'database':
             env = {'POSTGRES_PASSWORD': password, 'POSTGRES_USER': db_user, 'POSTGRES_DB': db_name,
                    'POSTGRES_INITDB_ARGS': '--data-checksums'}

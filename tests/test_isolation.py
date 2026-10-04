@@ -43,6 +43,12 @@ class IsolationTests(unittest.TestCase):
         server=result['services']['immich-server'];self.assertNotIn('ports',server)
         self.assertNotIn('SMTP_PASSWORD',server['environment'])
         self.assertEqual(server['image'],'ghcr.io/immich-app/immich-server:v3.2.4')
+    def test_smaller_node_heap_is_clone_only(self):
+        import resource_policy
+        result=self.build()
+        self.assertEqual(resource_policy.NODE_HEAP_MIB,448)
+        self.assertEqual(result['services']['immich-server']['environment']['NODE_OPTIONS'],'--max-old-space-size=448')
+        self.assertNotIn('NODE_OPTIONS',self.config['services']['immich-server']['environment'])
     def test_all_mounts_are_private_including_model_cache(self):
         for service in self.build()['services'].values():
             for mount in service.get('volumes',[]):

@@ -1,5 +1,32 @@
 # Verification and deployment boundaries
 
+## Current compact-4g-v3 headroom correction
+
+The clone-only hard parent cap is now **1728 MiB** and the clone Node heap ceiling
+is **448 MiB**. The separate **256 MiB** host/controller reserve and all recovery,
+isolation, kernel-enforcement and OOM gates are retained. Required MemAvailable
+is therefore **1984 MiB**, not a reduced threshold over an unchanged 1824 MiB clone.
+Production limits/environment/worker topology are unchanged.
+
+The exact staged package passed **187 tests** under Python 3.12/euid 0/umask 0077,
+both normally and with simulated 1000 MiB MemAvailable. Boundary regressions include
+1984 MiB accepted, one byte less deferred and observed 2053/2058 MiB admitted without
+changing the reserve. A separate fixture verifies the smaller Node heap is clone-only.
+
+A fresh native-ext4 synthetic fixture passed populated stock v3.1.0→v3.2.4 migration,
+original/album API checks, metadata preservation, destructive clone DB/files/config/
+old-image restoration, then a complete synthetic-source upgrade with password login
+and version persistence. All four actual service PID ancestries were verified under
+an outer **4 GiB**, zero-swap container slice; its peak was **3686952960 bytes** and
+OOM/kill counters stayed zero. Clone parent/child caps and counters passed before
+fault injection and after restored-old-runtime startup. Temporary kernel peak
+charges are preserved in [the sanitized receipt](compact-4g-v3-acceptance.json).
+
+This is a disk-backed container-overlap test, not a complete 4 GiB VM: the controller
+and host OS are outside the outer slice. It uses synthetic data, not the owner's DB;
+target-host preparation and full production-recovery capacity are still unverified.
+The older receipts below remain historical evidence for their stated profiles.
+
 ## Sampled-media revision
 
 The reproduction now retains a complete, unfiltered PostgreSQL dump and its
@@ -103,9 +130,9 @@ umask regression covers it. The production private-state validator, installer um
 resource limits, controller and admission gates are unchanged. These are package/unit
 checks, not a new real-host migration or restoration receipt.
 
-## Compact resource verification
+## Historical compact-4g-v2 resource verification
 
-The compact profile uses a native clone-only 1824 MiB shared parent RAM pool,
+The historical v2 profile used a native clone-only 1824 MiB shared parent RAM pool,
 individual Docker ceilings and zero swap at both levels. Kernel PID ancestry must
 confirm that each actual child belongs to the inspected bounded pool. Its server
 also sets the supported Node heap ceiling without altering the worker topology.
