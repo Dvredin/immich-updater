@@ -33,8 +33,8 @@ class SingleStackTests(unittest.TestCase):
             def synthetic_dump(stack,path):
                 Path(path).write_bytes(b'PGDMP test-only archive');Path(path).chmod(0o600)
             dump=synthetic_dump
-        def healthy(stack,selected=None,expected_images=None):return {'version':selected or 'v3.1.0','ping':True}
-        with patch('simple_update.Compose',return_value=self.stack),patch('simple_update.preflight',return_value=self.receipt),patch('simple_update.running_pinned',return_value=self.config),patch('simple_update.dump_database',side_effect=dump),patch('simple_update.healthy',side_effect=healthy),contextlib.redirect_stdout(io.StringIO()):
+        def healthy(stack,selected=None,expected_images=None,**kwargs):return {'version':selected or 'v3.1.0','ping':True}
+        with patch('simple_update.Compose',return_value=self.stack),patch('simple_update.runtime_config',return_value=self.config),patch('simple_update.preflight',return_value=self.receipt),patch('simple_update.running_pinned',return_value=self.config),patch('simple_update.dump_database',side_effect=dump),patch('simple_update.healthy',side_effect=healthy),contextlib.redirect_stdout(io.StringIO()):
             return simple.apply(self.path,self.candidate,'v3.2.4','v3.1.0',self.state,failure_hook=fault)
     def test_success_has_fresh_dump_config_backup_and_no_photo_copy(self):
         result=self.apply()
@@ -123,6 +123,24 @@ class SingleStackTests(unittest.TestCase):
         cfg=copy.deepcopy(self.config);cfg['services']['database']['volumes']=[{'type':'bind','source':'/synthetic-only','target':'/var/lib/postgresql/data'}];self.candidate.write_text(json.dumps(cfg))
         with self.assertRaises(RehearsalError):self.apply()
         self.stack.call.assert_not_called()
+    def test_candidate_top_level_volume_identity_swap_never_stops(self):
+        self.config['volumes']={'data':{'name':'captured-source-volume','external':True}}
+        cfg=copy.deepcopy(self.config);cfg['volumes']['data']['name']='different-target-volume'
+        self.candidate.write_text(json.dumps(cfg))
+        with self.assertRaises(RehearsalError):self.apply()
+        self.stack.call.assert_not_called()
+    def test_captured_redis_volume_reaches_runtime_and_old_checkpoint(self):
+        logical='immich-updater-redis-data'
+        self.config['services']['redis']['volumes']=[{'type':'volume','source':logical,'target':'/data'}]
+        self.config['volumes']={logical:{'name':'synthetic-existing-redis-volume','external':True}}
+        self.candidate.write_text(json.dumps(self.config))
+        with patch('simple_update.run',return_value=json.dumps([{'Mountpoint':str(self.root/'redis-volume')}]).encode()):
+            result=self.apply()
+        checkpoint=json.loads((Path(result['backup'])/'old-compose.json').read_text())
+        active=json.loads(self.path.read_text())
+        for config in (checkpoint,active):
+            self.assertEqual(config['volumes'],self.config['volumes'])
+            self.assertEqual(config['services']['redis']['volumes'],self.config['services']['redis']['volumes'])
     def test_dump_invalid_magic_is_not_verified(self):
         def call(*args,**kwargs):
             if 'stdout' in kwargs:kwargs['stdout'].write(b'not a dump')
@@ -190,6 +208,75 @@ class SingleStackTests(unittest.TestCase):
     def test_legacy_transaction_refuses_without_api(self):
         self.state.mkdir();(self.state/'transaction.json').write_text('{}')
         with self.assertRaises(simple.NeedsAttention):simple.preflight(self.path,self.state)
+
+
+class RedisImageVolumeTests(unittest.TestCase):
+    def setUp(self):
+        self.config={'name':'synthetic','services':{'redis':{'image':'old-redis','volumes':[]}}}
+        self.item={'Image':'sha256:'+'a'*64,'Config':{'Labels':{
+            'com.docker.compose.project':'synthetic','com.docker.compose.service':'redis'}},
+            'Mounts':[{'Type':'volume','Name':'synthetic-private-volume','Destination':'/data','RW':True}]}
+        self.image={'Config':{'Volumes':{'/data':{}}}}
+    def normalize(self):
+        with patch('simple_update.run',return_value=json.dumps([self.image]).encode()) as run:
+            result=simple.verify_mounts(self.config,'redis',self.item)
+        self.assertEqual(run.call_args.args[0],['docker','image','inspect',self.item['Image']])
+        return result
+    def test_image_declared_redis_data_is_pinned_as_existing_external_volume(self):
+        before=copy.deepcopy(self.config);result=self.normalize()
+        mount=result['services']['redis']['volumes'][0]
+        self.assertEqual(mount['target'],'/data');self.assertEqual(mount['type'],'volume')
+        declaration=result['volumes'][mount['source']]
+        self.assertEqual(declaration,{'name':'synthetic-private-volume','external':True})
+        self.assertEqual(self.config,before)
+        with patch('simple_update.run',side_effect=AssertionError('Explicit mount needs no image inference')):
+            self.assertEqual(simple.verify_mounts(result,'redis',self.item),result)
+    def test_missing_image_volume_declaration_refuses(self):
+        self.image['Config']['Volumes']={}
+        with self.assertRaises(RehearsalError):self.normalize()
+    def test_missing_immutable_running_image_refuses_without_inspection(self):
+        self.item['Image']='old-redis:tag'
+        with patch('simple_update.run',side_effect=AssertionError('Do not inspect a mutable image')):
+            with self.assertRaises(RehearsalError):simple.verify_mounts(self.config,'redis',self.item)
+    def test_only_redis_data_can_be_inferred(self):
+        for change in ('bind','read_only','extra','other_service','missing_name','duplicate'):
+            with self.subTest(change=change):
+                cfg=copy.deepcopy(self.config);item=copy.deepcopy(self.item)
+                if change=='bind':item['Mounts'][0].update(Type='bind',Source='/synthetic-only')
+                elif change=='read_only':item['Mounts'][0]['RW']=False
+                elif change=='extra':item['Mounts'].append({'Type':'volume','Name':'other','Destination':'/extra','RW':True})
+                elif change=='missing_name':item['Mounts'][0].pop('Name')
+                elif change=='duplicate':item['Mounts'].append(copy.deepcopy(item['Mounts'][0]))
+                else:cfg['services']['database']=cfg['services'].pop('redis')
+                name='database' if change=='other_service' else 'redis'
+                with patch('simple_update.run',return_value=json.dumps([self.image]).encode()):
+                    with self.assertRaises(RehearsalError):simple.verify_mounts(cfg,name,item)
+    def test_existing_declared_mount_identity_cannot_be_adopted(self):
+        self.config['services']['redis']['volumes']=[{'type':'volume','source':'data','target':'/data'}]
+        self.config['volumes']={'data':{'name':'different-configured-volume'}}
+        with patch('simple_update.run',side_effect=AssertionError('Explicit drift cannot be inferred')):
+            with self.assertRaises(RehearsalError):simple.verify_mounts(self.config,'redis',self.item)
+    def test_reserved_volume_key_collision_refuses(self):
+        self.config['volumes']={'immich-updater-redis-data':{'name':'other-volume'}}
+        with self.assertRaises(RehearsalError):self.normalize()
+    def test_runtime_capture_normalizes_but_refuses_duplicate_or_wrong_project(self):
+        stack=Mock();stack.config.return_value=self.config;stack.call.return_value=b'one'
+        def run(argv,**kwargs):
+            return json.dumps([self.image] if argv[:3]==['docker','image','inspect'] else [self.item]).encode()
+        with patch('simple_update.run',side_effect=run):
+            result=simple.runtime_config(stack)
+        self.assertTrue(result['volumes'])
+        for items in ([self.item,self.item], [{**self.item,'Config':{'Labels':{'com.docker.compose.project':'other','com.docker.compose.service':'redis'}}}]):
+            with patch('simple_update.run',return_value=json.dumps(items).encode()):
+                with self.assertRaises(RehearsalError):simple.runtime_config(stack)
+    def test_captured_volume_identity_drift_stays_denied(self):
+        result=self.normalize();self.item['Mounts'][0]['Name']='replacement-volume'
+        with patch('simple_update.run',side_effect=AssertionError('Do not infer explicit drift')):
+            with self.assertRaises(RehearsalError):simple.verify_mounts(result,'redis',self.item)
+    def test_normalized_redis_volume_participates_in_state_overlap_guard(self):
+        result=self.normalize()
+        with patch('simple_update.run',return_value=json.dumps([{'Mountpoint':'/synthetic/private-volume'}]).encode()):
+            with self.assertRaises(RehearsalError):simple.location(result,Path('/synthetic/private-volume/state'))
 
 
 class ControllerTests(unittest.TestCase):

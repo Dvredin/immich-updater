@@ -72,7 +72,50 @@ def verify_mounts(config, name, item):
         if not target or target in actual:raise RehearsalError('Ambiguous actual data mount.')
         actual[target]=(kind,identity,mount.get('RW'))
     if actual!=expected:
-        raise RehearsalError('Actual runtime data mounts differ from configuration; source unchanged.')
+        # Older stock Redis images declare VOLUME /data. Docker creates that
+        # volume even when Compose declares none; pin its existing identity,
+        # rather than ignoring it or letting a new image replace it.
+        if (name!='redis' or '/data' in expected or set(actual)-set(expected)!={'/data'}
+            or any(actual.get(target)!=value for target,value in expected.items())):
+            raise RehearsalError('Actual runtime data mounts differ from configuration; source unchanged.')
+        kind,identity,writable=actual['/data']
+        image=item.get('Image','')
+        if (kind!='volume' or writable is not True or not isinstance(identity,str)
+            or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*',identity)
+            or not re.fullmatch(r'sha256:[0-9a-f]{64}',image)):
+            raise RehearsalError('Implicit Redis volume lacks supported runtime provenance.')
+        metadata=json.loads(run(['docker','image','inspect',image],timeout=30))
+        volumes=(metadata[0].get('Config',{}).get('Volumes') or {}) if len(metadata)==1 else {}
+        if not isinstance(volumes,dict) or '/data' not in volumes:
+            raise RehearsalError('Undeclared Redis mount is not declared by its running image.')
+        logical='immich-updater-redis-data'
+        if logical in config.get('volumes',{}):
+            raise RehearsalError('Reserved Redis volume declaration conflicts with existing configuration.')
+        result=copy.deepcopy(config)
+        result.setdefault('volumes',{})[logical]={'name':identity,'external':True}
+        result['services'][name].setdefault('volumes',[]).append({
+            'type':'volume','source':logical,'target':'/data'})
+        return result
+    return config
+
+
+def runtime_config(stack):
+    """Read-only mount capture; never expose or replace a running data volume."""
+    config=stack.config()
+    ids=stack.call('ps','-aq').decode().split()
+    if not ids:raise RehearsalError('No application containers for mount capture.')
+    found=set()
+    for item in json.loads(run(['docker','inspect',*ids],timeout=30)):
+        labels=item.get('Config',{}).get('Labels') or {}
+        name=labels.get('com.docker.compose.service')
+        if (labels.get('com.docker.compose.project')!=config.get('name')
+            or name not in config['services'] or name in found):
+            raise RehearsalError('Application mount capture identity is ambiguous.')
+        config=verify_mounts(config,name,item)
+        found.add(name)
+    if found!=set(config['services']):
+        raise RehearsalError('Incomplete application mount capture.')
+    return config
 
 
 def location(config, state_dir):
@@ -155,8 +198,8 @@ def backup_capacity(stack, state_dir):
             'photo_copy_required': False, 'parallel_rehearsal': False}
 
 
-def healthy(stack, selected=None, expected_images=None):
-    config = stack.config()
+def healthy(stack, selected=None, expected_images=None, *, expected_config=None, state_dir=None):
+    config = stack.config() if expected_config is None else expected_config
     ids = stack.call('ps', '-aq').decode().split()
     if not ids:
         raise RehearsalError('No application containers.')
@@ -171,10 +214,12 @@ def healthy(stack, selected=None, expected_images=None):
             raise RehearsalError('An application service is not running/healthy.')
         if expected_images and item.get('Image') != expected_images.get(name):
             raise RehearsalError('Started image differs from the selected pinned image.')
-        verify_mounts(config,name,item)
+        config=verify_mounts(config,name,item)
         found[name] = item
     if set(found) != set(config['services']):
         raise RehearsalError('Missing or extra application service.')
+    if state_dir is not None:
+        location(config,state_dir)
     expected_db = db_identity(config)
     runtime = copy.deepcopy(config)
     for name in ('immich-server','database'):
@@ -202,7 +247,7 @@ def preflight(source_path, state_dir):
     check_pending(source_path,state_dir)
     stack = Compose(source_path)
     receipt = backup_capacity(stack, state_dir)
-    receipt['runtime'] = healthy(stack)
+    receipt['runtime'] = healthy(stack,state_dir=state_dir)
     receipt['source_mutations'] = False
     return receipt
 
@@ -228,7 +273,7 @@ def apply(source_path, candidate_path, selected, installed, state_dir, *, failur
     version(selected); version(installed)
     source_path, candidate_path = Path(source_path), Path(candidate_path)
     source = Compose(source_path)
-    old_config = source.config()
+    old_config = runtime_config(source)
     root = private_root(location(old_config, state_dir))
     checked = preflight(source_path, root)
     require_upgrade(checked['runtime']['version'], installed, selected)
@@ -237,6 +282,8 @@ def apply(source_path, candidate_path, selected, installed, state_dir, *, failur
         raise RehearsalError('Candidate changed the database being backed up.')
     if candidate.get('name') != old_config.get('name') or set(candidate['services']) != set(old_config['services']):
         raise RehearsalError('Candidate project/service identity changed.')
+    if candidate.get('volumes',{})!=old_config.get('volumes',{}):
+        raise RehearsalError('Candidate volume identities changed.')
     for name, service in candidate['services'].items():
         if service.get('volumes', []) != old_config['services'][name].get('volumes', []):
             raise RehearsalError('Candidate data mounts changed.')
@@ -244,7 +291,7 @@ def apply(source_path, candidate_path, selected, installed, state_dir, *, failur
             raise RehearsalError('Candidate port publication changed.')
         if not re.fullmatch(r'sha256:[0-9a-f]{64}', service.get('image', '')):
             raise RehearsalError('Candidate images must be immutable local IDs.')
-    old_pinned = running_pinned(source)
+    old_pinned = running_pinned(source,config=old_config)
     backup = root / ('db-backup-' + uuid.uuid4().hex)
     backup.mkdir(mode=0o700)
     atomic_bytes(backup/'old-compose.json', compose_bytes(old_pinned))
@@ -264,7 +311,7 @@ def apply(source_path, candidate_path, selected, installed, state_dir, *, failur
     journal = root/JOURNAL
     marker = source_path.parent/APPLICATION_MARKER
     # Recheck the actual source after pulls/config preparation, directly before stop.
-    require_upgrade(healthy(source)['version'], installed, selected)
+    require_upgrade(healthy(source,expected_config=old_config)['version'], installed, selected)
     state_save(journal, state)
     state_save(marker, {'profile':PROFILE,'journal':str(journal),'state_dir':str(root)})
     def clear_pending():

@@ -23,6 +23,28 @@ local HTTP server exercises request/response parsing. No application restart exi
 
 ## Current hardening after independent review
 
+### Redis image-volume compatibility repair
+
+A subsequent read-only installer preflight identified a separate confirmed defect:
+an older Redis image's implicit `/data` volume was rejected as undeclared mount
+drift. The repair verifies the actual running image's immutable ID and volume
+declaration, then captures the existing Docker volume as an explicit external
+mapping. Candidate preparation, old-image checkpoint, pre-stop checks and later
+updates retain that identity. Other mount drift and state overlap remain refusals.
+
+The current source passes247 tests. Focused regressions cover image provenance,
+missing/duplicate/unexpected mounts, explicit-name drift, reserved-key conflicts,
+state overlap, native candidate adaptation and update/checkpoint retention.
+A real Docker fixture created an implicit volume from a synthetic image based on
+Valkey, stored and saved a key, and recreated the container using an image with
+no volume declaration. The same volume and persisted key survived that change
+and a second recreation; a changed captured volume name was rejected.
+No host ports, owner stack, owner data or production configuration were used.
+[Redis volume acceptance](redis-volume-acceptance.json) records this narrow live
+test; it is not another full Immich migration or certification of the owner's VM.
+
+### Previous hardening evidence
+
 The first production attempt after installation failed with an opaque RehearsalError
 following a successful preflight. Its exact root cause remains unproven: no private
 owner configuration or raw Docker error was collected. Six source defects were

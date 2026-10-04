@@ -48,7 +48,7 @@ class CandidateTests(unittest.TestCase):
             if command[:2]==['docker','pull']:self.pulls.append(command[2]);return b''
             raise AssertionError('No unplanned Docker operation: '+command[1])
         response=Mock(content=TEMPLATE.encode())
-        with patch('transaction.Compose',side_effect=compose),patch('transaction.run',side_effect=run),patch('transaction.pinned',side_effect=lambda cfg:cfg),patch('transaction.requests.get',return_value=response):
+        with patch('transaction.Compose',side_effect=compose),patch('simple_update.runtime_config',return_value=copy.deepcopy(original)),patch('transaction.run',side_effect=run),patch('transaction.pinned',side_effect=lambda cfg:cfg),patch('transaction.requests.get',return_value=response):
             path=transaction.candidate_config(self.path,'v3.2.4',self.root/'state',rehearsal_capacity=False)
         return json.loads(path.read_text())
     def require_parser(self):
@@ -80,6 +80,15 @@ class CandidateTests(unittest.TestCase):
     def test_no_ports_in_source_does_not_publish_default_port(self):
         self.require_parser();result=self.candidate()
         self.assertNotIn('ports',result['services']['immich-server'])
+    def test_captured_redis_volume_is_retained_in_native_candidate(self):
+        self.require_parser()
+        self.config['services']['redis']['volumes']=[{
+            'type':'volume','source':'immich-updater-redis-data','target':'/data'}]
+        self.config['volumes']['immich-updater-redis-data']={
+            'name':'synthetic-existing-redis-volume','external':True}
+        result=self.candidate()
+        self.assertEqual(result['services']['redis']['volumes'],self.config['services']['redis']['volumes'])
+        self.assertEqual(result['volumes'],self.config['volumes'])
     def test_loopback_port_mapping_is_preserved(self):
         self.require_parser();self.config['services']['immich-server']['ports']=[{'target':2283,'published':'2283','host_ip':'127.0.0.1','protocol':'tcp'}]
         result=self.candidate();self.assertEqual(result['services']['immich-server']['ports'],self.config['services']['immich-server']['ports'])

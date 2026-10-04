@@ -1,0 +1,20 @@
+{
+  "automatic_downgrade": false,
+  "automatic_image_volume_created": true,
+  "changed_volume_identity_refused": true,
+  "explicit_external_identity_pinned": true,
+  "host_ports_published": false,
+  "new_image_without_volume_declaration": true,
+  "owner_production_accessed": false,
+  "read_only_capture": true,
+  "redis_persisted_key_preserved": true,
+  "runtime_module_sha256": {
+    "simple_update.py": "b410b8b28e1a1aa6ff67dd38d42977d025b457f8f0d05718f7c5252f74bb182f",
+    "transaction.py": "ae1853d8ed35e043c9409a43119f929455ecceb06797d0a85d5c33e87e4ad30a"
+  },
+  "same_volume_after_recreation": true,
+  "scope": "Native Redis volume lifecycle only; prior full Immich migration evidence is separate.",
+  "second_recreation_preserved": true,
+  "stage": "passed",
+  "synthetic_fixture": true
+}

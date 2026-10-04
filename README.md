@@ -48,6 +48,15 @@ decode Compose's escaped config output; passwords, Unicode and paths do not pass
 through a second interpolation layer. Creation of secret-containing temporary files
 is private from the first open, regardless of the original Compose's old permissions.
 
+Older stock Redis images declare `VOLUME /data`, so Docker creates a volume even
+when the site's Compose file lists none. Read-only checks accept only this Redis
+volume, after verifying the actual immutable running image declares `/data`.
+The update pins the existing volume as an explicit external mapping in both the
+candidate and old-image checkpoint, including when the new Redis/Valkey image no
+longer declares that volume. Installation does not change the running stack.
+Missing/different configured mounts, other undeclared mounts, changed volume names
+and state-storage overlap still fail closed; no volume is deleted or reset.
+
 If backup fails before migration, resume the unchanged old images when possible.
 If target startup or post-checks fail, retain the actual state and backup for owner
 inspection. The same candidate is not retried while its pending marker exists.

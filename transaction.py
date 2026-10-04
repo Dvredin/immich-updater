@@ -80,9 +80,10 @@ def pinned(config):
     return result
 
 
-def running_pinned(stack):
+def running_pinned(stack, *, config=None):
     """Checkpoint the images actually used by old containers, never moved tags."""
-    config = stack.config()
+    captured=config is not None
+    config = stack.config() if config is None else config
     ids = stack.call('ps', '-aq').decode().split()
     if not ids:
         raise RehearsalError('No old runtime containers for checkpoint provenance.')
@@ -97,6 +98,9 @@ def running_pinned(stack):
             raise RehearsalError('Old runtime has extra/duplicate services.')
         if not re.fullmatch(r'sha256:[0-9a-f]{64}', item.get('Image', '')):
             raise RehearsalError('Old runtime has invalid content-addressed image identity.')
+        if captured:
+            from simple_update import verify_mounts
+            verify_mounts(config,name,item)
         found[name] = item['Image']
     if set(found) != SERVICES:
         raise RehearsalError('Every stock old service must have a concrete container.')
@@ -116,6 +120,9 @@ def candidate_config(source_path, selected, state_dir, *, rehearsal_capacity=Tru
     version(selected)
     source = Compose(source_path)
     original = source.config()
+    if not rehearsal_capacity:
+        from simple_update import runtime_config
+        original=runtime_config(source)
     if set(original.get('services', {})) != SERVICES:
         raise RehearsalError('Unsupported production service layout.')
     for name, item in original['services'].items():
