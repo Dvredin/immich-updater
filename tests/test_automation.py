@@ -180,10 +180,10 @@ class FilesystemTests(unittest.TestCase):
 class CapacityTests(unittest.TestCase):
     def test_storage_failure_is_preflight_not_partial_data_copy(self):
         with patch('transaction.mounted_roots',return_value=[Path('/synthetic')]),patch('transaction.run',return_value=b'1000000000 synthetic'),patch('transaction.shutil.disk_usage',return_value=Mock(free=1)):
-            with self.assertRaises(rehearsal.RehearsalError):transaction.rehearsal_capacity({'services':{}},'/synthetic-state')
+            with self.assertRaises(__import__('resource_policy').ResourceUnavailable):transaction.full_checkpoint_capacity({'services':{}},'/synthetic-state')
     def test_sufficient_storage_passes(self):
         with patch('transaction.mounted_roots',return_value=[Path('/synthetic')]),patch('transaction.run',return_value=b'1000 synthetic'),patch('transaction.shutil.disk_usage',return_value=Mock(free=10**12)):
-            self.assertGreater(transaction.rehearsal_capacity({'services':{}},'/synthetic-state'),1000)
+            self.assertGreater(transaction.full_checkpoint_capacity({'services':{}},'/synthetic-state'),1000)
 
 
 class RuntimeImageTests(unittest.TestCase):

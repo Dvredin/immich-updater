@@ -20,10 +20,10 @@ A successful synthetic test does not verify another host's storage/runtime. Comp
 ## Execution
 
 1. Resolve this installation's paths and download the **exact release's** official Compose template. Preserve stock site mounts/settings, adopt its official images/commands/health checks, and pull/pin images by content address before touching production. Unknown topology is a safe skip/failure, not a guessed migration.
-2. Capture a custom-format PostgreSQL dump and separate file/model-cache copies. Use CoW when available; otherwise real copies, never hard links. Clone symlinks must remain inside the clone root.
+2. Capture the complete custom-format PostgreSQL dump and comparison baseline in one exported snapshot. Clone only a bounded original-file sample: at most 16 files, 128 MiB total, 64 MiB per file, chosen from 64 DB candidates. Preserve their relative paths and stock storage sentinel files. Every clone mount is private; external libraries are sampled too, never mounted from production. ML starts with an empty private cache, so this does not certify production model inference. No full-photo-library walk/copy occurs during rehearsal.
 3. Run new PostgreSQL/Redis and restore the dump on a private Docker bridge configured `internal` with IPv4/IPv6 **isolated gateway modes**. There are no host ports, Docker socket, shared production volumes, devices or outbound endpoints/credentials. Inspect actual network/mount isolation before starting the candidate application and again afterwards.
 4. Start the candidate on the copied database/files. Check migrations, selected version, authenticated API reads, sample-original content hash, clone-only album write/delete and metadata identity/counts/album/face relationships across the old/new schema. Authentication uses a local temporary API key; this does not test external OAuth or every user interaction.
-5. Automatically build another private old-version copy and run a **real full-state recovery drill**: migrate it, intentionally delete a clone album/change clone file bytes, inject a post-migration failure, restore its cold files/database/config/images and verify old runtime health. Production remains untouched throughout.
+5. Automatically build another private old-version copy and run a **real full-state recovery drill**: migrate it, intentionally delete a clone album/change clone file bytes, inject a post-migration failure, restore that test build's cold files/database/config/images and verify old runtime health. This restores all state of the small build, not the complete production media library. Production remains untouched throughout.
 6. Re-fetch security advisories. Freeze the production application writer; read the fresh baseline from its still-running DB, stop every stack container and verify stop. Capture all writable media, PostgreSQL, model-cache/local-volume directories plus Compose/`.env` together. Keep the old image IDs. A failed capture resumes the unchanged old stack; it must not restore a partial checkpoint.
 7. Journal the upgrade **before** mutation, publish the tested pinned Compose config **with every host port removed**, and start/check the candidate while new client writes remain blocked. Persist `IMMICH_VERSION` in `.env`, commit the verified new state, then activate its original host ports. Once activation may admit user writes, recovery retries the committed candidate instead of restoring an older snapshot and losing those writes. The rendered Compose file is JSON (valid YAML), mode 0600, and contains resolved settings; it is secret-bearing and never logged or committed.
 8. A startup/post-start failure stops the complete stack and restores **all mutable directories, DB, configuration and old images together**. Original candidate-mutated directories are renamed and preserved. Compare restored file bytes with the cold checkpoint **while stopped**, then restart/check the old application. Generated thumbnails/storage sentinel files may legitimately change after old startup; original asset/config bytes must remain restored.
@@ -37,7 +37,8 @@ There is downtime during the fresh production checkpoint and the production upda
 - Docker Engine supporting bridge `gateway_mode_ipv4=isolated` and `gateway_mode_ipv6=isolated` on an internal bridge. Unsupported options must block rehearsal; never replace this with ordinary shared networking.
 - Exactly the stock `immich-server`, `immich-machine-learning`, `database`, `redis` services, normal `/data` and PostgreSQL directory mappings, a regular `.env` and one Compose file (or `--compose-file`).
 - Mutable data roots must be disjoint ordinary local directories, not broad system paths, symlink parents, mountpoints, or externally-managed volume drivers. GPU/device passthrough and changed service topology require another verified backend; they are not silently emulated as production compatibility.
-- Enough space for two full rehearsal copies, a fresh cold checkpoint, recovery staging and retained previous/failed copies. CoW can reduce this but is not assumed. Nothing is automatically deleted. Insufficient space blocks changes and is logged.
+- Rehearsal space is based on the live PostgreSQL database size and a fixed sample allowance, not the complete photo library. Current conservative admission is `6 × database size + 6 × 128 MiB + 512 MiB`, covering dumps, sequential test instances and their recovery state. Recheck before each capture; unknown/insufficient capacity fails closed. Retained past runs still consume space and are not silently deleted.
+- Production rollback remains independent: a full cold copy of mutable production directories and room for restore staging are mandatory before a source upgrade. Read-only external originals do not need a production rollback copy. No sample receipt certifies production backup; activation refuses when the supported complete-mutable-state backend cannot fit. No snapshot backend or guaranteed CoW savings are implied.
 - Source images must still exist locally for content-addressed recovery. Do not prune images/checkpoints during an active transaction.
 
 ## Compact rehearsal on a 4 GiB host
@@ -102,7 +103,7 @@ sudo python3 tools/install.py --app-dir /opt/immich --expected-revision COMMIT_S
 ```
 
 The installer verifies the source revision, checks Docker 28+, x86-64-v2 where applicable,
-the compact clone memory budget and full-copy capacity, creates a private staging venv, runs the tests,
+the compact clone memory budget and database/sample capacity, creates a private staging venv, runs the tests,
 and runs `--prepare-only` on private copies. It preserves the previous updater, does not
 upgrade production and leaves the timer disabled. A skip is not host acceptance.
 
@@ -113,7 +114,7 @@ sudo python3 /opt/immich-updater/tools/install.py --app-dir /opt/immich --expect
 sudo journalctl -u immich-updater.service -n 60 --no-pager
 ```
 
-Activation requires the matching host receipt and unchanged installed code. `Persistent=true`
+Activation requires the matching host receipt, unchanged installed code and separately verified capacity for a complete production checkpoint/recovery. A passing sampled rehearsal is not a production rollback certificate. `Persistent=true`
 can trigger a missed run immediately. A `STOP` means do not enable the old timer manually;
 inspect the local preparation log. Python 3.10+, `python3-venv`, Git and the supported
 Docker/Compose installation must already be available; the installer does not upgrade Docker/OS.
@@ -164,7 +165,7 @@ Before claiming installed, verify the actual VM's revision, service/drop-ins, Py
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -v
-.venv/bin/python -m compileall -q immich_updater.py risk_checks.py resource_policy.py rehearsal.py transaction.py recovery_drill.py tests tools
+.venv/bin/python -m compileall -q immich_updater.py risk_checks.py resource_policy.py sample_rehearsal.py rehearsal.py transaction.py recovery_drill.py tests tools
 git diff --check
 ```
 

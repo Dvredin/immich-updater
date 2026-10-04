@@ -88,9 +88,12 @@ class IsolationTests(unittest.TestCase):
         config=copy.deepcopy(self.config);config['services']['immich-server']['volumes'][0]['source']=str(self.library)
         config['services']['immich-machine-learning']['volumes']=[]
         source=Mock();source.config.return_value=config
-        def capture(path):path.write_bytes(b'TEST-ONLY-CAPTURE');return 'postgres','immich',{}
+        def capture(path):
+            path.write_bytes(b'TEST-ONLY-CAPTURE')
+            (path.parent/'sample-candidates.json').write_text('[]')
+            return 'postgres','immich',{}
         source.capture_database.side_effect=capture;clone=Mock()
-        with patch('rehearsal.Compose',side_effect=[source,clone]),patch('rehearsal.verify_isolation',side_effect=rehearsal.RehearsalError('bad actual network')),self.assertRaises(rehearsal.RehearsalError):
+        with patch('sample_rehearsal.capacity',return_value=1024),patch('rehearsal.Compose',side_effect=[source,clone]),patch('rehearsal.verify_isolation',side_effect=rehearsal.RehearsalError('bad actual network')),self.assertRaises(rehearsal.RehearsalError):
             rehearsal.rehearse(self.root/'unused.yml','v3.2.4',self.root/'runs')
         self.assertEqual([call.args[0] for call in clone.call.call_args_list],['create','down'])
     def test_runtime_host_port_detected(self):
@@ -126,6 +129,22 @@ class EntrypointTests(unittest.TestCase):
         self.root=Path(self.temp.name);(self.root/'compose.yml').write_text('fixture');(self.root/'.env').write_text('IMMICH_VERSION=v3.1.0\n')
         self.args=updater.parser().parse_args(['--immich-dir',str(self.root),'--state-dir',str(self.root/'state')])
         memory=patch('resource_policy.preflight_memory',return_value={'profile':'test-only'});memory.start();self.addCleanup(memory.stop)
+        capacity=patch('transaction.full_checkpoint_capacity',return_value=1024);capacity.start();self.addCleanup(capacity.stop)
+        compose=patch('rehearsal.Compose',return_value=Mock(config=Mock(return_value={})));compose.start();self.addCleanup(compose.stop)
+    def test_missing_full_production_checkpoint_defers_before_candidate_or_rehearsal(self):
+        from resource_policy import ResourceUnavailable
+        with patch('transaction.restore',return_value=None),patch('immich_updater.current_version',return_value=(3,1,0)),patch('immich_updater.choose',return_value=('v3.2.4',False)),patch('transaction.full_checkpoint_capacity',side_effect=ResourceUnavailable('test-only rollback storage')),patch('transaction.candidate_config') as candidate,patch('rehearsal.rehearse') as rehearse,patch('transaction.apply') as apply,contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(updater.run(self.args),0)
+        candidate.assert_not_called();rehearse.assert_not_called();apply.assert_not_called()
+        self.assertFalse((self.root/'state'/'quarantine.json').exists())
+        self.assertIn('defer_rollback_storage',output.getvalue())
+
+    def test_prepare_only_does_not_require_all_source_photo_copies(self):
+        self.args.prepare_only=True
+        with patch('transaction.restore',return_value=None),patch('immich_updater.current_version',return_value=(3,1,0)),patch('immich_updater.choose',return_value=('v3.2.4',False)),patch('transaction.full_checkpoint_capacity',side_effect=AssertionError('No production backup for sample testing')),patch('transaction.candidate_config',return_value='private-test-candidate'),patch('rehearsal.rehearse'),patch('recovery_drill.restore_drill'),patch('transaction.apply') as apply,contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(updater.run(self.args),0)
+        apply.assert_not_called()
+
     def test_recovery_precedes_unavailable_source_api(self):
         with patch('transaction.restore',return_value='restored') as restore,patch('immich_updater.current_version',side_effect=RuntimeError('should not run')) as current,contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(updater.run(self.args),0);restore.assert_called_once();current.assert_not_called()

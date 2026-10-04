@@ -98,6 +98,8 @@ def restore_drill(source_path, candidate_path, installed, selected, state_root):
         receipt = {'stage': 'passed', 'installed': installed, 'target': selected,
                    'post_migration_failure_injected': True, 'database_restored': True,
                    'files_restored': True, 'configuration_restored': True,
+                   'media_scope': 'bounded_sample', 'database_scope': 'full',
+                   'production_checkpoint_verified': False,
                    'old_image_and_health_verified': True, 'production_mutations': False,
                    'resource_limits_verified': True, 'resources': clone_resources(clone),
                    'candidate_resources_before_rollback': candidate_resources}

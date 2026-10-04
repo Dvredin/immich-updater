@@ -50,7 +50,7 @@ class ResourceTests(unittest.TestCase):
     def verify(self): return resources.verify_containers(self.items)
     def test_preflight_does_not_stop_or_write_source_on_pressure(self):
         source=Mock();source.config.return_value={'services':{}}
-        with patch('rehearsal.Compose',return_value=source),patch('rehearsal.preflight_memory',side_effect=resources.ResourceUnavailable('test-only low RAM')):
+        with patch('sample_rehearsal.capacity',return_value=1024),patch('rehearsal.Compose',return_value=source),patch('rehearsal.preflight_memory',side_effect=resources.ResourceUnavailable('test-only low RAM')):
             with self.assertRaises(resources.ResourceUnavailable):rehearsal.rehearse(self.root/'unused.yml','v3.2.4',self.root/'never-created')
         source.capture_database.assert_not_called();source.call.assert_not_called()
         self.assertFalse((self.root/'never-created').exists())
@@ -313,6 +313,8 @@ class EntryResourceTests(unittest.TestCase):
         self.root=Path(self.temp.name);(self.root/'compose.yml').write_text('test-only')
         (self.root/'.env').write_text('IMMICH_VERSION=v3.1.0\n')
         self.args=updater.parser().parse_args(['--immich-dir',str(self.root),'--state-dir',str(self.root/'state')])
+        capacity=patch('transaction.full_checkpoint_capacity',return_value=1024);capacity.start();self.addCleanup(capacity.stop)
+        compose=patch('rehearsal.Compose',return_value=Mock(config=Mock(return_value={})));compose.start();self.addCleanup(compose.stop)
     def test_docker_enomem_after_preflight_is_not_release_quarantine(self):
         def allocator_failure(*args,**kwargs):
             return rehearsal.run(['docker','compose','create'],resource_errors_transient=True)

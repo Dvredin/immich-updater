@@ -1,6 +1,52 @@
 # Verification and deployment boundaries
 
-## Exercised integration
+## Sampled-media revision
+
+The reproduction now retains a complete, unfiltered PostgreSQL dump and its
+metadata baseline/sample candidates from the same exported snapshot, but copies
+only bounded originals: at most 16 files, 128 MiB total, 64 MiB each from 64 candidates.
+Stock storage sentinels retain their contents; thumbnails/model-cache trees are
+not copied. External-library mounts are private sampled directories, never live
+production binds. Descriptor-relative no-follow traversal guards every original
+source component, including source-root parents; duplicate paths are skipped.
+Captured original hashes remain independent of candidate-mutated bytes.
+
+The exact 25-file staged payload passed 185 tests under Python 3.12/euid 0/umask 0077,
+both normally and with simulated 1000 MiB MemAvailable. Negative tests reject
+symlink swaps, path escapes, empty populated samples, byte/count overflow and
+changed captured-original hashes. Pure controller/activation doubles verify that
+sample preparation does not require complete media-copy capacity, but production
+admission does; insufficient full rollback capacity is a retryable deferral and
+cannot release the lock/enable the scheduler. An isolated `-I -S` activation
+regression reproduced the missing system `requests` dependency before correction;
+activation now runs the read-only production-storage probe through the installed
+venv, keeps its diagnostics private and requires an affirmative byte-budget receipt.
+
+The complete native sample integration passed real stock v3.1.0→v3.2.4 migration,
+authenticated original/album API checks, metadata preservation, destructive clone
+DB/file/config/old-image recovery, and a subsequent synthetic-source upgrade with
+old password login and version persistence. The fixture had one 725-byte original
+and a complete 18,373,977-byte custom-format DB dump; upper limits are independently
+exercised by the filesystem unit fixtures, not by pretending this tiny JPEG is 128 MiB.
+All running clone parent/child OOM counters were zero at acceptance; the configured
+1824 MiB parent cap and zero swap remained enforced. Historical temporary kernel
+peak overcharges are retained in the [sanitized receipt](sampled-media-acceptance.json).
+
+The test used a disposable ext4 image with 4 GiB RAM backing precharged outside the
+clone pool. Earlier plain/sparsely backed RAM-storage trials failed parent OOM and
+were rejected, not promoted to successes or used to relax the budget. The synthetic
+source waited for initial worker bootstrap before capture. This final result
+validates the capped clone/controller path, not the host OS/controller/backing RAM
+budget of an entire 4 GiB VM or the actual owner's DB/library. Production rollback
+and real-host preparation remain separate acceptance requirements.
+
+The bounded independent read-only review reported a source-parent-symlink race and
+activation importing venv-only dependencies in system Python. Deterministic
+filesystem/isolated-interpreter regressions reproduced the mechanisms and passed
+after descriptor-relative no-follow traversal and installed-venv probing. It did
+not review every older controller path or independently re-audit the corrected tree.
+
+## Exercised integration — historical full-copy baseline
 
 The automatic transition was exercised on an explicitly synthetic stock four-service
 Immich deployment from **v3.1.0 to v3.2.4**, using the real published container images.

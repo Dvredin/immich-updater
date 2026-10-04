@@ -73,10 +73,10 @@ def logged_call(log_path, *arguments, **kwargs):
 PACKAGE_FILES = (
     '.gitignore', 'LICENSE', 'README.md', 'docs/REHEARSAL_VERIFICATION.md',
     'immich_updater.py', 'rehearsal.py', 'transaction.py', 'recovery_drill.py',
-    'risk_checks.py', 'risk_policy.json', 'resource_policy.py', 'requirements.txt', 'requirements-dev.txt',
+    'risk_checks.py', 'risk_policy.json', 'resource_policy.py', 'sample_rehearsal.py', 'requirements.txt', 'requirements-dev.txt',
     'systemd/immich-updater.service', 'systemd/immich-updater.timer',
     'tools/install.py', 'tests/test_automation.py', 'tests/test_isolation.py',
-    'tests/test_install.py', 'tests/test_resources.py', 'tests/run_live_acceptance.py', 'tests/seed_live_fixture.py',
+    'tests/test_install.py', 'tests/test_resources.py', 'tests/test_samples.py', 'tests/run_live_acceptance.py', 'tests/seed_live_fixture.py',
     'tests/archive/strict_policy_v1.py',
 )
 
@@ -122,10 +122,16 @@ def gate(output):
     rehearsed = any(row.get('event') == 'rehearsal' and row.get('stage') == 'passed'
                     and row.get('target') == target and row.get('runtime_isolation_verified') is True
                     and row.get('production_mutations') is False
-                    and row.get('resource_limits_verified') is True for row in rows)
+                    and row.get('resource_limits_verified') is True
+                    and row.get('media_scope') == 'bounded_sample'
+                    and row.get('database_scope') == 'full'
+                    and row.get('production_checkpoint_verified') is False for row in rows)
     restored = any(row.get('event') == 'restore_drill' and row.get('stage') == 'passed'
                    and row.get('target') == target and row.get('production_mutations') is False
                    and row.get('resource_limits_verified') is True
+                   and row.get('media_scope') == 'bounded_sample'
+                   and row.get('database_scope') == 'full'
+                   and row.get('production_checkpoint_verified') is False
                    and all(row.get(key) is True for key in ('database_restored','files_restored','configuration_restored','old_image_and_health_verified'))
                    for row in rows)
     if not (rehearsed and restored):
@@ -182,6 +188,24 @@ def activate(release_lock=None):
             raise StopInstall('Установленный код отличается от проверенного пакета: ' + relative)
     if (STATE / 'transaction.json').exists():
         raise StopInstall('Есть незавершённая транзакция; таймер автоматически не активируется.')
+    # This entry point intentionally runs in system Python. Only its installed
+    # private venv has application dependencies; never import them into this process.
+    python = DEST / '.venv/bin/python'
+    if not python.is_file():
+        raise StopInstall('Installed updater venv is missing. Timer remains disabled.')
+    probe = ('from pathlib import Path\nfrom rehearsal import Compose\n'
+             'from transaction import full_checkpoint_capacity\n'
+             'from resource_policy import ResourceUnavailable\n'
+             'root=Path(' + repr(str(APP)) + ')\n'
+             "paths=[root/n for n in ('docker-compose.yml','docker-compose.yaml','compose.yml','compose.yaml') if (root/n).is_file()]\n"
+             "if len(paths)!=1:raise SystemExit('Expected one production Compose file.')\n"
+             'try:\n    required=full_checkpoint_capacity(Compose(paths[0]).config(),Path(' + repr(str(STATE)) + '))\n'
+             "    print('PRODUCTION_ROLLBACK_BUDGET_BYTES='+str(required))\n"
+             'except ResourceUnavailable as error:\n    raise SystemExit(str(error))\n')
+    checked = logged_call(STATE / 'activation-storage.log',str(python),'-c',probe,
+                          cwd=str(DEST),timeout=1200)
+    if not re.fullmatch(r'PRODUCTION_ROLLBACK_BUDGET_BYTES=[1-9][0-9]*',checked.stdout.strip()):
+        raise StopInstall('No affirmative production rollback capacity receipt. Timer remains disabled.')
     if release_lock:
         release_lock()  # Persistent catch-up must not collide with the installer lock.
     call('systemctl','enable','--now',TIMER)
@@ -232,7 +256,7 @@ def install():
     if STATE.is_symlink() or STATE.stat().st_mode & 0o077:
         raise StopInstall('Каталог состояния должен быть обычным и приватным (0700).')
     # Read-only path/space validation surfaces a reason without dumping env values.
-    probe = "from pathlib import Path\nfrom rehearsal import Compose, RehearsalError\nfrom transaction import rehearsal_capacity\nroot=Path('/opt/immich')\npaths=[root/n for n in ('docker-compose.yml','docker-compose.yaml','compose.yml','compose.yaml') if (root/n).is_file()]\nif len(paths)!=1:raise SystemExit('Ожидается один Compose-файл в каталоге Immich.')\ntry:\n    required=rehearsal_capacity(Compose(paths[0]).config(),'/var/lib/immich-updater/state')\n    print('FULL_COPY_BUDGET_BYTES='+str(required))\nexcept RehearsalError as error:\n    raise SystemExit(str(error))\n"
+    probe = "from pathlib import Path\nfrom rehearsal import Compose, RehearsalError\nfrom sample_rehearsal import capacity\nfrom resource_policy import ResourceUnavailable\nroot=Path('/opt/immich')\npaths=[root/n for n in ('docker-compose.yml','docker-compose.yaml','compose.yml','compose.yaml') if (root/n).is_file()]\nif len(paths)!=1:raise SystemExit('Ожидается один Compose-файл в каталоге Immich.')\ntry:\n    required=capacity(Compose(paths[0]),'/var/lib/immich-updater/state')\n    print('SAMPLE_REHEARSAL_BUDGET_BYTES='+str(required))\nexcept (RehearsalError, ResourceUnavailable) as error:\n    raise SystemExit(str(error))\n"
     probe = probe.replace("root=Path('/opt/immich')", "root=Path("+repr(str(APP))+")")
     checked = call(python,'-c',probe,cwd=str(staging),timeout=1200,check=False)
     if checked.returncode:
@@ -289,7 +313,7 @@ def install():
              'prepare_log':str(log_path),'old_checkout':str(backup),'timer_enabled':False,
              'app_dir':str(APP),'files':{name:hashlib.sha256(data).hexdigest() for name,data in contents.items()}}
     private(READY,json.dumps(receipt,indent=2)+'\n')
-    print('PREPARED_TIMER_DISABLED: новый код установлен, репетиция и полный restore прошли; рабочий Immich НЕ обновлён.',flush=True)
+    print('PREPARED_TIMER_DISABLED: новый код установлен, репетиция БД/выборки файлов и restore тестовой сборки прошли; рабочий Immich НЕ обновлён. Production rollback проверяется отдельно.',flush=True)
     print('Старый updater сохранён: '+str(backup),flush=True)
     print('Для включения расписания выполните тот же файл с --activate.',flush=True)
 
@@ -299,8 +323,8 @@ def self_test():
     if not {'immich_updater.py','rehearsal.py','transaction.py','recovery_drill.py'} <= set(files):
         raise StopInstall('Неполный пакет.')
     fixture=[{'event':'decision','decision':'verified_not_applied','target':'v3.2.4'},
-             {'event':'rehearsal','stage':'passed','target':'v3.2.4','runtime_isolation_verified':True,'resource_limits_verified':True,'production_mutations':False},
-             {'event':'restore_drill','stage':'passed','target':'v3.2.4','production_mutations':False,'database_restored':True,'files_restored':True,'configuration_restored':True,'old_image_and_health_verified':True,'resource_limits_verified':True}]
+             {'event':'rehearsal','stage':'passed','target':'v3.2.4','media_scope':'bounded_sample','database_scope':'full','production_checkpoint_verified':False,'runtime_isolation_verified':True,'resource_limits_verified':True,'production_mutations':False},
+             {'event':'restore_drill','stage':'passed','target':'v3.2.4','media_scope':'bounded_sample','database_scope':'full','production_checkpoint_verified':False,'production_mutations':False,'database_restored':True,'files_restored':True,'configuration_restored':True,'old_image_and_health_verified':True,'resource_limits_verified':True}]
     if gate('\n'.join(json.dumps(row) for row in fixture)) != 'v3.2.4':raise StopInstall('Неверный positive gate.')
     for rows in ([],[{'event':'decision','decision':'skip'}],fixture[:-1],fixture[1:]):
         try:gate('\n'.join(json.dumps(row) for row in rows))

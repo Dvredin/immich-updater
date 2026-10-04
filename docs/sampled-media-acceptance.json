@@ -1,0 +1,285 @@
+{
+  "profile": "sampled-media-v1",
+  "synthetic_fixture": true,
+  "owner_production_accessed": false,
+  "source": "v3.1.0",
+  "target": "v3.2.4",
+  "stage": "passed",
+  "actual_nonempty_upgrade": true,
+  "source_metadata_preserved": true,
+  "existing_password_login_verified": true,
+  "version_pin_persisted": true,
+  "rehearsal_runs": [
+    {
+      "target": "v3.2.4",
+      "sample": {
+        "profile": "sampled-media-v1",
+        "database_scope": "full",
+        "media_scope": "bounded_sample",
+        "copied_files": 1,
+        "copied_bytes": 725,
+        "skipped_candidates": 0,
+        "max_files": 16,
+        "max_bytes": 134217728,
+        "ml_cache_scope": "empty",
+        "production_checkpoint": false
+      },
+      "checks": {
+        "version": "v3.2.4",
+        "authenticated_reads": true,
+        "sample_asset_read": true,
+        "clone_album_write": true
+      },
+      "parent": {
+        "current_bytes": 1802674176,
+        "peak_bytes": 1912664064,
+        "oom_events": 0,
+        "kernel_limit_bytes": 1912602624,
+        "swap_limit_bytes": 0
+      },
+      "services": {
+        "database": {
+          "limit_bytes": 1073741824,
+          "kernel": {
+            "current_bytes": 522022912,
+            "peak_bytes": 687681536,
+            "oom_events": 0,
+            "kernel_limit_bytes": 1073741824,
+            "swap_limit_bytes": 0
+          }
+        },
+        "immich-machine-learning": {
+          "limit_bytes": 402653184,
+          "kernel": {
+            "current_bytes": 254128128,
+            "peak_bytes": 280809472,
+            "oom_events": 0,
+            "kernel_limit_bytes": 402653184,
+            "swap_limit_bytes": 0
+          }
+        },
+        "immich-server": {
+          "limit_bytes": 1476395008,
+          "kernel": {
+            "current_bytes": 1011113984,
+            "peak_bytes": 1341149184,
+            "oom_events": 0,
+            "kernel_limit_bytes": 1476395008,
+            "swap_limit_bytes": 0
+          }
+        },
+        "redis": {
+          "limit_bytes": 33554432,
+          "kernel": {
+            "current_bytes": 15294464,
+            "peak_bytes": 24666112,
+            "oom_events": 0,
+            "kernel_limit_bytes": 33554432,
+            "swap_limit_bytes": 0
+          }
+        }
+      },
+      "database_dump_bytes": 18373977
+    },
+    {
+      "target": "v3.1.0",
+      "sample": {
+        "profile": "sampled-media-v1",
+        "database_scope": "full",
+        "media_scope": "bounded_sample",
+        "copied_files": 1,
+        "copied_bytes": 725,
+        "skipped_candidates": 0,
+        "max_files": 16,
+        "max_bytes": 134217728,
+        "ml_cache_scope": "empty",
+        "production_checkpoint": false
+      },
+      "checks": {
+        "version": "v3.1.0",
+        "authenticated_reads": true,
+        "sample_asset_read": true,
+        "clone_album_write": true
+      },
+      "parent": {
+        "current_bytes": 1615511552,
+        "peak_bytes": 1643945984,
+        "oom_events": 0,
+        "kernel_limit_bytes": 1912602624,
+        "swap_limit_bytes": 0
+      },
+      "services": {
+        "database": {
+          "limit_bytes": 1073741824,
+          "kernel": {
+            "current_bytes": 408363008,
+            "peak_bytes": 449294336,
+            "oom_events": 0,
+            "kernel_limit_bytes": 1073741824,
+            "swap_limit_bytes": 0
+          }
+        },
+        "immich-machine-learning": {
+          "limit_bytes": 402653184,
+          "kernel": {
+            "current_bytes": 308371456,
+            "peak_bytes": 334454784,
+            "oom_events": 0,
+            "kernel_limit_bytes": 402653184,
+            "swap_limit_bytes": 0
+          }
+        },
+        "immich-server": {
+          "limit_bytes": 1476395008,
+          "kernel": {
+            "current_bytes": 893202432,
+            "peak_bytes": 921821184,
+            "oom_events": 0,
+            "kernel_limit_bytes": 1476395008,
+            "swap_limit_bytes": 0
+          }
+        },
+        "redis": {
+          "limit_bytes": 33554432,
+          "kernel": {
+            "current_bytes": 5459968,
+            "peak_bytes": 6397952,
+            "oom_events": 0,
+            "kernel_limit_bytes": 33554432,
+            "swap_limit_bytes": 0
+          }
+        }
+      },
+      "database_dump_bytes": 18373977
+    }
+  ],
+  "restore_drill": {
+    "stage": "passed",
+    "installed": "v3.1.0",
+    "target": "v3.2.4",
+    "post_migration_failure_injected": true,
+    "database_restored": true,
+    "files_restored": true,
+    "configuration_restored": true,
+    "media_scope": "bounded_sample",
+    "database_scope": "full",
+    "production_checkpoint_verified": false,
+    "old_image_and_health_verified": true,
+    "production_mutations": false,
+    "resource_limits_verified": true
+  },
+  "candidate_before_rollback_resources": {
+    "profile": "compact-4g-v2",
+    "total_limit_bytes": 1912602624,
+    "child_ceiling_sum_bytes": 2986344448,
+    "parent": {
+      "current_bytes": 1885822976,
+      "peak_bytes": 1912832000,
+      "oom_events": 0,
+      "kernel_limit_bytes": 1912602624,
+      "swap_limit_bytes": 0
+    },
+    "swap_disabled": true,
+    "services": {
+      "database": {
+        "limit_bytes": 1073741824,
+        "kernel": {
+          "current_bytes": 423804928,
+          "peak_bytes": 709611520,
+          "oom_events": 0,
+          "kernel_limit_bytes": 1073741824,
+          "swap_limit_bytes": 0
+        }
+      },
+      "immich-machine-learning": {
+        "limit_bytes": 402653184,
+        "kernel": {
+          "current_bytes": 232669184,
+          "peak_bytes": 260018176,
+          "oom_events": 0,
+          "kernel_limit_bytes": 402653184,
+          "swap_limit_bytes": 0
+        }
+      },
+      "immich-server": {
+        "limit_bytes": 1476395008,
+        "kernel": {
+          "current_bytes": 1215696896,
+          "peak_bytes": 1310699520,
+          "oom_events": 0,
+          "kernel_limit_bytes": 1476395008,
+          "swap_limit_bytes": 0
+        }
+      },
+      "redis": {
+        "limit_bytes": 33554432,
+        "kernel": {
+          "current_bytes": 13438976,
+          "peak_bytes": 20017152,
+          "oom_events": 0,
+          "kernel_limit_bytes": 33554432,
+          "swap_limit_bytes": 0
+        }
+      }
+    }
+  },
+  "restored_resources": {
+    "profile": "compact-4g-v2",
+    "total_limit_bytes": 1912602624,
+    "child_ceiling_sum_bytes": 2986344448,
+    "parent": {
+      "current_bytes": 1579630592,
+      "peak_bytes": 1912832000,
+      "oom_events": 0,
+      "kernel_limit_bytes": 1912602624,
+      "swap_limit_bytes": 0
+    },
+    "swap_disabled": true,
+    "services": {
+      "database": {
+        "limit_bytes": 1073741824,
+        "kernel": {
+          "current_bytes": 45035520,
+          "peak_bytes": 62853120,
+          "oom_events": 0,
+          "kernel_limit_bytes": 1073741824,
+          "swap_limit_bytes": 0
+        }
+      },
+      "immich-machine-learning": {
+        "limit_bytes": 402653184,
+        "kernel": {
+          "current_bytes": 254685184,
+          "peak_bytes": 280268800,
+          "oom_events": 0,
+          "kernel_limit_bytes": 402653184,
+          "swap_limit_bytes": 0
+        }
+      },
+      "immich-server": {
+        "limit_bytes": 1476395008,
+        "kernel": {
+          "current_bytes": 900476928,
+          "peak_bytes": 919089152,
+          "oom_events": 0,
+          "kernel_limit_bytes": 1476395008,
+          "swap_limit_bytes": 0
+        }
+      },
+      "redis": {
+        "limit_bytes": 33554432,
+        "kernel": {
+          "current_bytes": 5697536,
+          "peak_bytes": 5840896,
+          "oom_events": 0,
+          "kernel_limit_bytes": 33554432,
+          "swap_limit_bytes": 0
+        }
+      }
+    }
+  },
+  "test_storage": "disposable ext4 loop with 4GiB RAM backing precharged outside clone cap",
+  "entire_4GiB_VM_reproduced": false,
+  "host_OS_controller_and_backing_memory_outside_clone_cap": true,
+  "production_rollback_backend": "separate complete mutable-state cold-copy admission required; sample is not a backup"
+}

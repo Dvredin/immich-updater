@@ -138,6 +138,9 @@ class Compose:
                 output.flush()
                 os.fsync(output.fileno())
             baseline = invariants(self, username, database, snapshot=snapshot)
+            from sample_rehearsal import candidates
+            private_json(destination.parent / 'sample-candidates.json',
+                         candidates(self, username, database, snapshot))
         finally:
             try:
                 session.communicate(input=b'ROLLBACK;\n\\q\n', timeout=10)
@@ -259,7 +262,7 @@ def build_isolated(config, sandbox: Path, selected, mount_map, password):
             elif mount.get('type') == 'volume' and name == 'immich-machine-learning' and target == '/cache':
                 key = 'volume:' + mount['source']
                 if key not in mount_map:
-                    raise RehearsalError('Cached ML models must be captured into the isolated copy.')
+                    raise RehearsalError('ML needs a private isolated cache.')
                 source = mount_map[key]
             else:
                 raise RehearsalError('Unsupported mount; refusing to inherit an external volume.')
@@ -329,7 +332,22 @@ def functional_checks(compose: Compose, selected, token, sandbox: Path):
     for endpoint in ('/api/users/me', '/api/albums', '/api/assets/statistics'):
         if compose.api(endpoint, headers=headers)['status'] != 200:
             raise RehearsalError('Authenticated clone read failed.')
-    asset = compose.sql("SELECT a.id FROM public.asset a JOIN public.api_key k ON k.\"userId\"=a.\"ownerId\" WHERE a.\"deletedAt\" IS NULL AND k.name='isolated-rehearsal' ORDER BY a.\"createdAt\" LIMIT 1;")
+    manifests = [sandbox / 'sample-manifest.json']
+    assets = []
+    manifests += [parent / 'sample-manifest.json' for parent in sandbox.parents
+                  if re.fullmatch(r'run-[0-9a-f]{32}', parent.name)]
+    manifest = next((path for path in manifests if path.is_file()), None)
+    if manifest:
+        assets = json.loads(manifest.read_text()).get('assets', [])
+        asset = assets[0]['id'] if assets else ''
+        if asset:
+            if not re.fullmatch(r'[0-9a-f-]{36}', asset):
+                raise RehearsalError('Invalid sampled asset identifier.')
+            owns = compose.sql("SELECT count(DISTINCT a.id) FROM public.asset a JOIN public.api_key k ON k.\"userId\"=a.\"ownerId\" WHERE a.id='" + asset + "' AND k.name='isolated-rehearsal';")
+            if owns != '1':
+                raise RehearsalError('Sample does not belong to the authenticated probe account.')
+    else:
+        asset = compose.sql("SELECT a.id FROM public.asset a JOIN public.api_key k ON k.\"userId\"=a.\"ownerId\" WHERE a.\"deletedAt\" IS NULL AND k.name='isolated-rehearsal' ORDER BY a.\"createdAt\" LIMIT 1;")
     if asset:
         if not re.fullmatch(r'[0-9a-f-]{36}', asset):
             raise RehearsalError('Invalid sampled asset identifier.')
@@ -339,8 +357,8 @@ def functional_checks(compose: Compose, selected, token, sandbox: Path):
         original_path = compose.sql("SELECT \"originalPath\" FROM public.asset WHERE id='" + asset + "';")
         expected = compose.call('exec', '-T', 'immich-server', 'node', '-e',
             "const fs=require('fs'),c=require('crypto');const h=c.createHash('sha256');const s=fs.createReadStream(process.argv[1]);s.on('data',b=>h.update(b));s.on('end',()=>console.log(h.digest('hex')));", original_path).decode().strip()
-        if answer['sha256'] != expected:
-            raise RehearsalError('Sample original API bytes differ from the stored file.')
+        if answer['sha256'] != expected or (manifest and answer['sha256'] != assets[0]['sha256']):
+            raise RehearsalError('Sample original API bytes differ from the captured file.')
     # Clone-only album write verifies authenticated mutation, without touching originals.
     created = compose.api('/api/albums', method='POST', body={'albumName': 'isolated-rehearsal-write'}, headers=headers)
     if created['status'] not in (200, 201) or not (created.get('data') or {}).get('id'):
@@ -439,6 +457,8 @@ def rehearse(source_path, selected, state_root, candidate_path=None):
                 raise RehearsalError('Unsupported source mount.')
             if original == state_root or original in state_root.parents or state_root in original.parents:
                 raise RehearsalError('State root overlaps source mount; no capture permitted.')
+    from sample_rehearsal import capacity
+    capacity(source, state_root.parent if not state_root.exists() else state_root)
     memory = preflight_memory()  # reserve source/host RAM before capture or clone startup
     log('resource_check', **memory, production_mutations=False)
     state_root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -448,28 +468,11 @@ def rehearse(source_path, selected, state_root, candidate_path=None):
     sandbox.mkdir(mode=0o700)
     private_json(sandbox / 'source-config.json', config)
     username, database, baseline = source.capture_database(sandbox / 'database.dump')
-    mapping = {}
-    for name, service in config['services'].items():
-        if name == 'database':
-            continue
-        for mount in service.get('volumes') or []:
-            if mount.get('type') == 'bind' and mount.get('target') != '/etc/localtime':
-                original = Path(mount['source']).resolve()
-                if str(original) not in mapping:
-                    destination = sandbox / 'files' / str(len(mapping))
-                    clone_private_tree(original, destination)
-                    mapping[str(original)] = destination
-            elif mount.get('type') == 'volume' and name == 'immich-machine-learning' and mount.get('target') == '/cache':
-                logical = mount['source']
-                actual = config.get('volumes', {}).get(logical, {}).get('name')
-                if not actual:
-                    raise RehearsalError('ML volume identity unavailable.')
-                data = json.loads(run(['docker', 'volume', 'inspect', actual]))[0]
-                if data.get('Driver') != 'local' or data.get('Options'):
-                    raise RehearsalError('External ML cache driver is unsupported.')
-                destination = sandbox / 'files' / str(len(mapping))
-                clone_private_tree(Path(data['Mountpoint']), destination)
-                mapping['volume:' + logical] = destination
+    from sample_rehearsal import sampled_mounts
+    rows = json.loads((sandbox / 'sample-candidates.json').read_text())
+    mapping, sample = sampled_mounts(config, sandbox, rows)
+    if baseline.get('assets', 0) and not sample['assets']:
+        raise RehearsalError('Populated source requires at least one bounded original sample.')
     template = Compose(candidate_path).config() if candidate_path else config
     isolated = build_isolated(template, sandbox, selected, mapping, secrets.token_urlsafe(32))
     if candidate_path:
@@ -504,8 +507,11 @@ def rehearse(source_path, selected, state_root, candidate_path=None):
         verify_isolation(clone, sandbox)
         receipt = {'stage': 'passed', 'target': selected, 'tests': tests,
                    'metadata_counts_preserved': True, 'runtime_isolation_verified': True,
+                   'media_scope': 'bounded_sample', 'database_scope': 'full',
+                   'production_checkpoint_verified': False,
                    'resource_limits_verified': True, 'resources': clone_resources(clone),
-                   'production_mutations': False, 'sandbox': str(sandbox)}
+                   'production_mutations': False, 'sandbox': str(sandbox),
+                   'sample': {k: v for k, v in sample.items() if k != 'assets'}}
         private_json(sandbox / 'receipt.json', receipt)
         log('rehearsal', **receipt)
         return receipt

@@ -20,8 +20,8 @@ module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 def good_receipt():
     return '\n'.join(json.dumps(row) for row in [
         {'event':'decision','decision':'verified_not_applied','target':'v3.2.4'},
-        {'event':'rehearsal','stage':'passed','target':'v3.2.4','runtime_isolation_verified':True,'resource_limits_verified':True,'production_mutations':False},
-        {'event':'restore_drill','stage':'passed','target':'v3.2.4','production_mutations':False,
+        {'event':'rehearsal','stage':'passed','target':'v3.2.4','media_scope':'bounded_sample','database_scope':'full','production_checkpoint_verified':False,'runtime_isolation_verified':True,'resource_limits_verified':True,'production_mutations':False},
+        {'event':'restore_drill','stage':'passed','target':'v3.2.4','media_scope':'bounded_sample','database_scope':'full','production_checkpoint_verified':False,'production_mutations':False,
          'database_restored':True,'files_restored':True,'configuration_restored':True,'old_image_and_health_verified':True,'resource_limits_verified':True}])
 
 
@@ -31,9 +31,11 @@ class InstallerTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR'));self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name);self.dest=self.root/'new';self.state=self.root/'state';self.state.mkdir(mode=0o700)
         self.ready=self.state/'ready.json';self.app=self.root/'app';self.app.mkdir();(self.app/'.env').write_text('TEST-ONLY')
+        (self.app/'compose.yml').write_text('TEST-ONLY')
     def ready_installation(self):
         for relative,content in module.package().items():
             path=self.dest/relative;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(content)
+        python=self.dest/'.venv/bin/python';python.parent.mkdir(parents=True);python.write_text('TEST-ONLY recording interpreter')
         self.ready.write_text(json.dumps({'status':'prepared','revision':module.REVISION,'app_dir':str(self.app),
             'files':{name:module.hashlib.sha256(data).hexdigest() for name,data in module.package().items()}}))
     def activate(self,call,release=None):
@@ -79,13 +81,60 @@ class InstallerTests(unittest.TestCase):
         call=Mock()
         with self.assertRaises(module.StopInstall):self.activate(call)
         call.assert_not_called()
+    def test_sample_preparation_cannot_enable_timer_without_production_rollback_storage(self):
+        self.ready_installation()
+        call=Mock(return_value=subprocess.CompletedProcess([],1,'','TEST-ONLY production rollback storage unavailable'))
+        release=Mock()
+        with self.assertRaises(module.StopInstall):self.activate(call,release)
+        release.assert_not_called()
+        self.assertEqual(len(call.call_args_list),1)
+        self.assertEqual(call.call_args.args[0],str(self.dest/'.venv/bin/python'))
+        self.assertEqual((self.state/'activation-storage.log').stat().st_mode&0o777,0o600)
+
+    def test_zero_exit_without_positive_storage_receipt_cannot_enable_timer(self):
+        self.ready_installation();call=Mock(return_value=subprocess.CompletedProcess([],0,'',''));release=Mock()
+        with self.assertRaises(module.StopInstall):self.activate(call,release)
+        release.assert_not_called();self.assertEqual(len(call.call_args_list),1)
+
+    def test_gate_missing_scope_does_not_claim_full_production_validation(self):
+        rows=[json.loads(line) for line in good_receipt().splitlines()]
+        rows[1].pop('media_scope')
+        with self.assertRaises(module.StopInstall):module.gate('\n'.join(json.dumps(row) for row in rows))
+
+    def test_activation_works_from_stdlib_only_outer_interpreter(self):
+        self.ready_installation()
+        script = r'''
+import contextlib,importlib.util,io,json,subprocess,sys
+from pathlib import Path
+from unittest.mock import patch
+spec=importlib.util.spec_from_file_location('installer',sys.argv[1])
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+m.DEST=Path(sys.argv[2]);m.APP=Path(sys.argv[3]);m.STATE=Path(sys.argv[4]);m.READY=Path(sys.argv[5]);m.REVISION=sys.argv[6]
+events=[]
+def call(*args,**kwargs):
+    events.append(args)
+    if '-c' in args:
+        if args[0]!=str(m.DEST/'.venv/bin/python') or kwargs.get('cwd')!=str(m.DEST):raise RuntimeError('Wrong probe interpreter/cwd')
+        return subprocess.CompletedProcess(args,0,'PRODUCTION_ROLLBACK_BUDGET_BYTES=1024\n','')
+    if args[:2]==('systemctl','is-enabled'):return subprocess.CompletedProcess(args,0,'enabled\n','')
+    return subprocess.CompletedProcess(args,0,'active\n','')
+with patch.object(m,'call',call),contextlib.redirect_stdout(io.StringIO()):m.activate()
+if not events or '-c' not in events[0]:raise RuntimeError('No installed-venv admission probe')
+if any(name in sys.modules for name in ('requests','semantic_version','rehearsal','transaction')):raise RuntimeError('Activation imported app dependencies into outer interpreter')
+print(json.dumps({'stdlib_outer':True,'installed_venv_probe':True,'host_lifecycle':'mocked'}))
+'''
+        result=subprocess.run([sys.executable,'-I','-S','-c',script,str(SOURCE),str(self.dest),str(self.app),str(self.state),str(self.ready),module.REVISION],capture_output=True,text=True,timeout=15)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertTrue(json.loads(result.stdout)['installed_venv_probe'])
+
     def test_activation_releases_lock_before_persistent_timer_start(self):
         self.ready_installation();events=[]
         def call(*args,**kwargs):
             events.append(args[1])
-            return Mock(returncode=0,stdout='enabled\n' if args[1]=='is-enabled' else 'active\n')
+            if '-c' in args:return subprocess.CompletedProcess(args,0,'PRODUCTION_ROLLBACK_BUDGET_BYTES=1024\n','')
+            return subprocess.CompletedProcess(args,0,'enabled\n' if args[1]=='is-enabled' else 'active\n','')
         self.activate(call,lambda:events.append('lock-released'))
-        self.assertEqual(events[:2],['lock-released','enable'])
+        self.assertEqual(events[:3],['-c','lock-released','enable'])
     def test_active_old_updater_not_killed_or_replaced(self):
         call=Mock(return_value=Mock(stdout='active\n',returncode=0))
         with patch.multiple(module,call=call,DEST=self.dest),self.assertRaises(module.StopInstall):module.install()

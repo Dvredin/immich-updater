@@ -123,11 +123,16 @@ def candidate_config(source_path, selected, state_dir):
         if name == 'immich-machine-learning' and re.search(r'-(cuda|rocm|openvino|armnn|rknn)(?:@|$)', item.get('image','')):
             raise RehearsalError('Accelerated source cannot be silently changed to CPU.')
     requested_state = Path(state_dir).absolute()
-    for root in mounted_roots(original):
+    checked_roots = set(mounted_roots(original))
+    checked_roots.update(Path(m['source']).resolve() for s in original['services'].values()
+                         for m in s.get('volumes', [])
+                         if m.get('type') == 'bind' and m.get('target') != '/etc/localtime')
+    for root in checked_roots:
         if root == requested_state or root in requested_state.parents or requested_state in root.parents:
             raise RehearsalError('Candidate state storage overlaps source data; no captured settings may be written.')
     state_dir = private_root(state_dir)
-    rehearsal_capacity(original, state_dir)
+    from sample_rehearsal import capacity
+    capacity(source, state_dir)
     work = state_dir / ('candidate-' + uuid.uuid4().hex)
     work.mkdir(mode=0o700)
     response = requests.get('https://raw.githubusercontent.com/immich-app/immich/' + selected + '/docker/docker-compose.yml', timeout=30)
@@ -185,7 +190,7 @@ def candidate_config(source_path, selected, state_dir):
     for image in sorted(images):
         run(['docker', 'pull', image], timeout=1800)
     resolved = pinned(resolved)
-    rehearsal_capacity(original, state_dir)  # image pulls may have consumed free space
+    capacity(source, state_dir)  # image pulls may have consumed free space
     private_json(path, resolved)
     return path
 
@@ -222,21 +227,15 @@ def mounted_roots(config):
     return sorted(roots)
 
 
-def rehearsal_capacity(config, state_dir):
-    """Budget retained rehearsal, drill, checkpoint and recovery before any capture."""
+def full_checkpoint_capacity(config, state_dir):
+    from resource_policy import ResourceUnavailable
     roots = mounted_roots(config)
-    for service in config['services'].values():
-        for mount in service.get('volumes', []):
-            if mount.get('read_only') and mount.get('type') == 'bind' and mount.get('target') != '/etc/localtime':
-                path = Path(mount['source']).resolve()
-                if not path.is_dir():
-                    raise RehearsalError('Only directory external libraries can be privately cloned.')
-                if path not in roots:
-                    roots.append(path)
+    if not roots:
+        raise RehearsalError('Full checkpoint requires complete mutable production roots.')
     total = sum(int(run(['du', '-sx', '--block-size=1', str(root)], timeout=300).decode().split()[0]) for root in roots)
-    required = 6 * total + 512 * 1024 * 1024
+    required = 2 * total + 512 * 1024 * 1024
     if shutil.disk_usage(state_dir).free < required:
-        raise RehearsalError('Insufficient space for isolated rehearsals and full checkpoint/recovery; source unchanged.')
+        raise ResourceUnavailable('Production rollback storage unavailable: a sampled rehearsal is not a full checkpoint; source unchanged.')
     return required
 
 
@@ -326,10 +325,9 @@ def checkpoint(stack, source_path, state_dir, baseline, installed):
     if any(source_path == root or root in source_path.parents for root in roots):
         raise RehearsalError('Compose config must be outside mutable data mounts.')
     assert_exclusive(roots, cfg['name'])
-    # Allow checkpoint plus recovery staging without deleting old or failed data.
-    total = sum(int(run(['du', '-sx', '--block-size=1', str(root)], timeout=300).decode().split()[0]) for root in roots)
-    if shutil.disk_usage(state_dir).free < 2 * total + 512 * 1024 * 1024:
-        raise RehearsalError('Insufficient space for full checkpoint and non-destructive recovery staging.')
+    # Sampled rehearsal is not a production backup. Preserve complete mutable-state
+    # capture plus recovery admission before stopping a source writer.
+    full_checkpoint_capacity(cfg, state_dir)
     dest = state_dir / ('checkpoint-' + uuid.uuid4().hex)
     dest.mkdir(mode=0o700)
     private_json(dest / 'old-compose.json', cfg)

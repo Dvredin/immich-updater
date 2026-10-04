@@ -206,6 +206,15 @@ def run(args):
             production_mutations=False, automatic_retry=True)
         return 0
     log('resource_check', **memory, production_mutations=False)
+    if not args.prepare_only:
+        from transaction import full_checkpoint_capacity
+        from rehearsal import Compose
+        try:
+            full_checkpoint_capacity(Compose(source_path).config(), state_dir)
+        except ResourceUnavailable as exc:
+            log('decision', decision='defer_rollback_storage', target=selected, reason=str(exc),
+                production_mutations=False, automatic_retry=True)
+            return 0
     candidate = candidate_config(source_path, selected, state_dir / 'candidates')
     try:
         rehearse(source_path, selected, state_dir / 'rehearsals', candidate_path=candidate)

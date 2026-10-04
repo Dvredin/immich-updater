@@ -66,6 +66,10 @@ def acceptance(root, selected='v3.2.4', cgroup_parent=None):
     stack=Compose(path)
     try:
         stack.call('up','-d','--wait','--wait-timeout','240',timeout=300)
+        # Model an established installation, not a DB captured halfway through its
+        # first-run geodata import. API health alone precedes worker readiness.
+        from rehearsal import wait_clone_workers
+        wait_clone_workers(stack)
         login={'email':'synthetic-acceptance@example.invalid','password':secrets.token_urlsafe(24),'name':'Synthetic acceptance'}
         signup=stack.api('/api/auth/admin-sign-up',method='POST',body=login)
         if signup['status'] != 201:
