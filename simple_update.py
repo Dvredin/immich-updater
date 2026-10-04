@@ -11,10 +11,12 @@ import os
 import re
 import shutil
 import stat
+import traceback
 import uuid
 from pathlib import Path
+from typing import Any
 
-from rehearsal import Compose, RehearsalError, run
+from rehearsal import Compose, RehearsalError, run, compose_bytes
 from transaction import atomic_bytes, private_root, running_pinned, state_save
 from risk_checks import log, version
 
@@ -26,6 +28,51 @@ MIB = 1024 * 1024
 
 class NeedsAttention(RehearsalError):
     pass
+
+
+def failure_details(error, stage='unknown'):
+    """Stable safe fields only: no exception bodies, resolved config, argv or stderr."""
+    result: dict[str,Any]={'stage':stage,'error_code':'validation_failed' if isinstance(error,RehearsalError) else 'unexpected_error'}
+    data=getattr(error,'diagnostic',{})
+    if isinstance(data,dict) and data.get('error_code')=='command_failed':
+        result['error_code']='command_failed'
+        allowed={'image_pull','image_inspect','volume_inspect','container_inspect','other',
+                 'compose_config','compose_ps','compose_stop','compose_up','compose_exec',
+                 'compose_create','compose_down','database_dump','database_archive_check'}
+        if data.get('operation') in allowed:result['operation']=data['operation']
+        if type(data.get('exit_status')) is int:result['exit_status']=data['exit_status']
+        allowed_hints={'invalid_interpolation','undefined_volume','disk_full','registry_denied','connection','permission','manifest'}
+        result['hints']=[v for v in data.get('hints',[]) if v in allowed_hints]
+    for frame in reversed(traceback.extract_tb(error.__traceback__)):
+        if Path(frame.filename).name in {'immich_updater.py','simple_update.py','transaction.py','rehearsal.py'}:
+            result['source']={'module':Path(frame.filename).name,'line':frame.lineno,'function':frame.name}
+            break
+    boundary=getattr(error,'mutation_started',None)
+    if type(boundary) is bool:result['mutation_started']=boundary
+    return result
+
+
+def verify_mounts(config, name, item):
+    expected={}
+    for mount in config['services'][name].get('volumes',[]):
+        kind=mount.get('type');target=mount.get('target')
+        if kind=='bind':identity=str(Path(mount['source']).resolve())
+        elif kind=='volume':
+            identity=config.get('volumes',{}).get(mount['source'],{}).get('name')
+            if not identity:raise RehearsalError('Declared named volume identity is unresolved.')
+        else:raise RehearsalError('Unsupported runtime data mount type.')
+        if not target or target in expected:raise RehearsalError('Ambiguous declared data mount.')
+        expected[target]=(kind,identity,not mount.get('read_only',False))
+    actual={}
+    for mount in item.get('Mounts',[]):
+        kind=mount.get('Type');target=mount.get('Destination')
+        if kind=='bind':identity=str(Path(mount['Source']).resolve())
+        elif kind=='volume':identity=mount.get('Name')
+        else:raise RehearsalError('Unsupported actual data mount type.')
+        if not target or target in actual:raise RehearsalError('Ambiguous actual data mount.')
+        actual[target]=(kind,identity,mount.get('RW'))
+    if actual!=expected:
+        raise RehearsalError('Actual runtime data mounts differ from configuration; source unchanged.')
 
 
 def location(config, state_dir):
@@ -117,13 +164,14 @@ def healthy(stack, selected=None, expected_images=None):
     for item in json.loads(run(['docker', 'inspect', *ids], timeout=30)):
         labels = item.get('Config', {}).get('Labels') or {}
         name = labels.get('com.docker.compose.service')
-        if labels.get('com.docker.compose.project') != config['name'] or name in found:
+        if labels.get('com.docker.compose.project') != config['name'] or name in found or name not in config['services']:
             raise RehearsalError('Application runtime identity is ambiguous.')
         state = item.get('State', {})
         if not state.get('Running') or state.get('OOMKilled') or (state.get('Health') or {}).get('Status') not in {None, 'healthy'}:
             raise RehearsalError('An application service is not running/healthy.')
         if expected_images and item.get('Image') != expected_images.get(name):
             raise RehearsalError('Started image differs from the selected pinned image.')
+        verify_mounts(config,name,item)
         found[name] = item
     if set(found) != set(config['services']):
         raise RehearsalError('Missing or extra application service.')
@@ -192,12 +240,14 @@ def apply(source_path, candidate_path, selected, installed, state_dir, *, failur
     for name, service in candidate['services'].items():
         if service.get('volumes', []) != old_config['services'][name].get('volumes', []):
             raise RehearsalError('Candidate data mounts changed.')
+        if service.get('ports',[]) != old_config['services'][name].get('ports',[]):
+            raise RehearsalError('Candidate port publication changed.')
         if not re.fullmatch(r'sha256:[0-9a-f]{64}', service.get('image', '')):
             raise RehearsalError('Candidate images must be immutable local IDs.')
     old_pinned = running_pinned(source)
     backup = root / ('db-backup-' + uuid.uuid4().hex)
     backup.mkdir(mode=0o700)
-    atomic_bytes(backup/'old-compose.json', json.dumps(old_pinned).encode())
+    atomic_bytes(backup/'old-compose.json', compose_bytes(old_pinned))
     saved = []
     for path in (source_path, source_path.parent/'.env'):
         if path.is_symlink() or not path.is_file() or path.absolute()!=path.resolve():
@@ -234,7 +284,9 @@ def apply(source_path, candidate_path, selected, installed, state_dir, *, failur
         # Durable boundary precedes any target configuration/start that may migrate DB.
         state['mutation_started']=True; state_save(journal,state)
         meta=source_path.stat()
-        atomic_bytes(source_path,json.dumps(candidate).encode(),stat.S_IMODE(meta.st_mode))
+        # Resolved environment may contain secrets. Never inherit the old public
+        # YAML's mode, and never let Compose re-interpolate literal '$' settings.
+        atomic_bytes(source_path,compose_bytes(candidate),0o600)
         os.chown(source_path,meta.st_uid,meta.st_gid)
         active = Compose(source_path,old_config['name'])
         active.call('up','-d','--wait','--wait-timeout','900',timeout=1200)
@@ -251,6 +303,8 @@ def apply(source_path, candidate_path, selected, installed, state_dir, *, failur
         return state
     except BaseException as exc:
         state['error_type']=type(exc).__name__
+        setattr(exc,'mutation_started',state['mutation_started'])
+        state['diagnostic']=failure_details(exc,state['phase'])
         if state['mutation_started']:
             state['phase']='needs_attention'
             state_save(journal,state)

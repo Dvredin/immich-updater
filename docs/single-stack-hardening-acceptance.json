@@ -1,0 +1,49 @@
+{
+  "actual_nonempty_upgrade": true,
+  "automatic_downgrade": false,
+  "database_dump_bytes": 18439476,
+  "existing_password_login_verified": true,
+  "failed_update_retained_for_owner": true,
+  "failed_update_retry_blocked": true,
+  "limits": [
+    "Purpose-built data only; no owner production access.",
+    "All test containers shared a 4GiB/swap0 cap; hostOS/controller were outside it.",
+    "Logical restore was a developer test, not an automatic production downgrade.",
+    "DB/config backup is not photo/video disaster backup."
+  ],
+  "literal_database_settings_verified": true,
+  "logical_database_backup_restore_verified": true,
+  "no_parallel_rehearsal": true,
+  "originals_preserved": true,
+  "owner_production_accessed": false,
+  "profile": "single-stack-v1",
+  "published_compose_private": true,
+  "resources": {
+    "actual_PID_ancestry_services": [
+      "database",
+      "immich-machine-learning",
+      "immich-server",
+      "redis"
+    ],
+    "ancestry_errors": [],
+    "controller_and_host_OS_outside_outer_cap": true,
+    "outer_limit_bytes": 4294967296,
+    "outer_oom_events": 0,
+    "outer_oom_kills": 0,
+    "outer_peak_bytes": 2748407808,
+    "outer_swap_limit_bytes": 0
+  },
+  "runtime_data_mounts_verified": true,
+  "runtime_module_sha256": {
+    "immich_updater.py": "2045c3059d8f80ac9fcab82f5565f0508b2bb64c50ee238a6239d16de2cd0a90",
+    "rehearsal.py": "3afab9a2639e7ff07ec6c5664a9dabd0534760c4bf1454ca363ad8eebfc6a007",
+    "simple_update.py": "1a28a59db254364f3200d61ebb8c0f6104e45b3bcb67143d3ec289eb8190f530",
+    "transaction.py": "bf8c4834812a8f40a1a6de9db8b88af82562c5717394aae1bcafded57dfb367b"
+  },
+  "source": "v3.1.0",
+  "source_metadata_preserved": true,
+  "stage": "passed",
+  "synthetic_fixture": true,
+  "target": "v3.2.4",
+  "version_pin_persisted": true
+}

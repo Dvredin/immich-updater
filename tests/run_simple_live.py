@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rehearsal import Compose, RehearsalError, invariants, private_json, rehearse, run
+from rehearsal import Compose, RehearsalError, invariants, private_json, rehearse, run, compose_bytes
 from transaction import atomic_bytes, candidate_config, pinned
 from simple_update import apply, preflight, healthy, NeedsAttention
 from transaction import stop
@@ -38,7 +38,7 @@ def acceptance(root, selected='v3.2.4', cgroup_parent=None):
     for name in ('library','database'):
         (source/name).mkdir(mode=0o700)
     project='immich-rehearsal-fixture-'+uuid.uuid4().hex[:10]
-    password=secrets.token_urlsafe(24)
+    password=secrets.token_hex(24)+"-${IMMICH_TEST_UNSET!}-$literal-кириллица-'"
     atomic_bytes(source/'.synthetic-fixture',b'Purpose-built test data only; no owner account or photo.\n')
     atomic_bytes(source/'.env',b'IMMICH_VERSION=v3.1.0\n')
     network={'internal':True,'driver_opts':{
@@ -66,7 +66,7 @@ def acceptance(root, selected='v3.2.4', cgroup_parent=None):
         depends_on=['database','redis','immich-machine-learning'])
     config['services']['immich-machine-learning']['volumes']=[{
         'type':'volume','source':'model-cache','target':'/cache'}]
-    path=source/'compose.json';private_json(path,config)
+    path=source/'compose.json';atomic_bytes(path,compose_bytes(config))
     stack=Compose(path)
     try:
         stack.call('up','-d','--wait','--wait-timeout','240',timeout=300)
@@ -128,6 +128,9 @@ def acceptance(root, selected='v3.2.4', cgroup_parent=None):
                 'no_parallel_rehearsal':True,'failed_update_retained_for_owner':True,
                 'failed_update_retry_blocked':True,'automatic_downgrade':False,
                 'database_dump_bytes':(backup/'database.dump').stat().st_size,
+                'literal_database_settings_verified':True,
+                'runtime_data_mounts_verified':True,
+                'published_compose_private':path.stat().st_mode&0o777==0o600,
                 'owner_production_accessed':False}
         private_json(root/'simple-acceptance-receipt.json',result)
         print(json.dumps(result,sort_keys=True))

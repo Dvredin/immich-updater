@@ -77,7 +77,7 @@ PACKAGE_FILES = (
     'immich_updater.py', 'simple_update.py', 'availability_monitor.py', 'rehearsal.py', 'transaction.py', 'recovery_drill.py',
     'risk_checks.py', 'risk_policy.json', 'resource_policy.py', 'sample_rehearsal.py', 'requirements.txt', 'requirements-dev.txt',
     'systemd/immich-updater.service', 'systemd/immich-updater.timer',
-    'tools/install.py', 'tests/test_simple.py', 'tests/test_availability.py', 'tests/test_automation.py', 'tests/test_isolation.py',
+    'tools/install.py', 'tests/test_simple.py', 'tests/test_candidate.py', 'tests/test_availability.py', 'tests/test_automation.py', 'tests/test_isolation.py',
     'tests/test_install.py', 'tests/test_resources.py', 'tests/test_samples.py', 'tests/run_live_acceptance.py', 'tests/seed_live_fixture.py',
     'tests/archive/strict_policy_v1.py',
 )

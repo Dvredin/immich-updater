@@ -17,6 +17,7 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 
 from risk_checks import log, version
 from resource_policy import (settings, preflight_memory, verify_containers, ResourceError,
@@ -40,7 +41,43 @@ process.stdout.write(JSON.stringify({status:r.status,data,bytes:length,sha256:ha
 
 
 class RehearsalError(RuntimeError):
-    pass
+    diagnostic: dict[str, Any] = {}
+
+
+def dollar_literals(value: Any, *, encode: bool) -> Any:
+    """Compose config output escapes '$'; resolved models keep literal values."""
+    if isinstance(value,str):return value.replace('$','$$') if encode else value.replace('$$','$')
+    if isinstance(value,list):return [dollar_literals(v,encode=encode) for v in value]
+    if isinstance(value,dict):return {k:dollar_literals(v,encode=encode) for k,v in value.items()}
+    return value
+
+
+def compose_bytes(config):
+    return json.dumps(dollar_literals(config,encode=True),ensure_ascii=False).encode()
+
+
+def command_failure(command, returncode, stderr):
+    """Expose only operation/code/classifications, never command args or stderr."""
+    operation='other'
+    if command[:2]==['docker','pull']:operation='image_pull'
+    elif command[:3]==['docker','image','inspect']:operation='image_inspect'
+    elif command[:3]==['docker','volume','inspect']:operation='volume_inspect'
+    elif command[:2]==['docker','inspect']:operation='container_inspect'
+    elif command[:2]==['docker','compose']:
+        for verb in ('config','ps','stop','up','exec','create','down'):
+            if verb in command:operation='compose_'+verb;break
+        if 'pg_dump' in command:operation='database_dump'
+        elif 'pg_restore' in command:operation='database_archive_check'
+    text=(stderr or b'').lower()
+    if isinstance(text,str):text=text.encode()
+    patterns={'invalid_interpolation':b'invalid interpolation|invalid template',
+              'undefined_volume':b'undefined volume', 'disk_full':b'no space left',
+              'registry_denied':b'unauthorized|denied', 'connection':b'connection|certificate|timeout',
+              'permission':b'permission', 'manifest':b'manifest'}
+    error=RehearsalError('Command failed; see safe operation/exit-status diagnostics.')
+    error.diagnostic={'error_code':'command_failed','operation':operation,'exit_status':returncode,
+                      'hints':[key for key,pattern in patterns.items() if re.search(pattern,text)]}
+    return error
 
 
 def private_json(path: Path, value):
@@ -52,9 +89,9 @@ def private_json(path: Path, value):
         os.fsync(out.fileno())
 
 
-def run(command, *, payload=None, timeout=60, stdout=None, stdin=None, resource_errors_transient=False):
+def run(command, *, payload=None, timeout=60, stdout=None, stdin=None, resource_errors_transient=False, environment=None):
     result = subprocess.run(command, input=payload, stdin=stdin, stdout=stdout or subprocess.PIPE,
-                            stderr=subprocess.PIPE, timeout=timeout)
+                            stderr=subprocess.PIPE, timeout=timeout,env=environment)
     if result.returncode:
         # Only clone lifecycle ENOMEM is transient. Never treat source mutation
         # failures or an actual clone OOM as successful resource deferral.
@@ -63,7 +100,7 @@ def run(command, *, payload=None, timeout=60, stdout=None, stdin=None, resource_
                 result.stderr or b'', re.IGNORECASE):
             raise ResourceUnavailable('Docker clone create/start failed with transient memory exhaustion; source unchanged.')
         # Docker/config errors may include environment values: do not print stderr.
-        raise RehearsalError(f'Command failed (exit {result.returncode}); private execution state retained.')
+        raise command_failure(command,result.returncode,result.stderr)
     return result.stdout or b''
 
 
@@ -86,8 +123,9 @@ class Compose:
                 kwargs['resource_errors_transient'] = True
         return run(self.base + list(arguments), **kwargs)
 
-    def config(self):
-        return json.loads(self.call('config', '--format', 'json'))
+    def config(self, *, environment=None):
+        result=json.loads(self.call('config', '--format', 'json',environment=environment))
+        return dollar_literals(result,encode=False)
 
     def sql(self, query, database=None, username=None):
         if database is None or username is None:

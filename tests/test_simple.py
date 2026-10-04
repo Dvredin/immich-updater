@@ -49,6 +49,49 @@ class SingleStackTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(),before)
         self.assertEqual((self.app/'.env').read_text(),'IMMICH_VERSION=v3.1.0\n')
         self.assertFalse((self.state/simple.JOURNAL).exists())
+    def test_runtime_compose_is_private_even_if_source_was_public(self):
+        self.path.chmod(0o644);self.apply()
+        self.assertEqual(self.path.stat().st_mode&0o777,0o600)
+    def test_actual_mount_drift_denied_before_api(self):
+        self.config['services']['database']['volumes']=[{'type':'bind','source':str(self.root/'new-db'),'target':'/var/lib/postgresql/data'}]
+        items=[]
+        for name,service in self.config['services'].items():
+            items.append({'Config':{'Labels':{'com.docker.compose.project':'synthetic','com.docker.compose.service':name},
+                 'Env':[k+'='+str(v) for k,v in service.get('environment',{}).items()]},
+                 'State':{'Running':True},'Mounts':[{'Type':'bind','Source':str(self.root/'old-db'),'Destination':'/var/lib/postgresql/data','RW':True}] if name=='database' else []})
+        self.stack.config.return_value=self.config;self.stack.call.return_value=b'test-only-id'
+        with patch('simple_update.run',return_value=json.dumps(items).encode()):
+            with self.assertRaises(RehearsalError):simple.healthy(self.stack)
+        self.stack.api.assert_not_called()
+    def test_actual_matching_bind_and_named_mounts_pass(self):
+        cfg=copy.deepcopy(self.config);cfg['volumes']={'db':{'name':'synthetic-db'}}
+        cfg['services']['database']['volumes']=[{'type':'volume','source':'db','target':'/var/lib/postgresql/data'}]
+        cfg['services']['immich-server']['volumes']=[{'type':'bind','source':str(self.root/'library'),'target':'/data','read_only':True}]
+        simple.verify_mounts(cfg,'database',{'Mounts':[{'Type':'volume','Name':'synthetic-db','Destination':'/var/lib/postgresql/data','RW':True}]})
+        simple.verify_mounts(cfg,'immich-server',{'Mounts':[{'Type':'bind','Source':str(self.root/'library'),'Destination':'/data','RW':False}]})
+        with self.assertRaises(RehearsalError):simple.verify_mounts(cfg,'immich-server',{'Mounts':[{'Type':'bind','Source':str(self.root/'library'),'Destination':'/data','RW':True}]})
+    def test_interruption_keeps_application_marker_and_records_mutation_boundary(self):
+        with self.assertRaises(KeyboardInterrupt):self.apply(fault=Mock(side_effect=KeyboardInterrupt()))
+        self.assertTrue((self.app/simple.APPLICATION_MARKER).exists())
+        state=json.loads((self.state/simple.JOURNAL).read_text())
+        self.assertTrue(state['diagnostic']['mutation_started']);self.assertEqual(state['phase'],'needs_attention')
+        with self.assertRaises(simple.NeedsAttention):simple.preflight(self.path,self.root/'alternate')
+    def test_runtime_named_volume_identity_drift_is_denied(self):
+        self.config['services']['database']['volumes']=[{'type':'volume','source':'db','target':'/var/lib/postgresql/data'}]
+        self.config['volumes']={'db':{'name':'expected-db'}}
+        items=[]
+        for name,service in self.config['services'].items():
+            items.append({'Config':{'Labels':{'com.docker.compose.project':'synthetic','com.docker.compose.service':name},
+                'Env':[k+'='+str(v) for k,v in service.get('environment',{}).items()]},'State':{'Running':True},
+                'Mounts':[{'Type':'volume','Name':'actual-different-db','Source':'/unused','Destination':'/var/lib/postgresql/data','RW':True}] if name=='database' else []})
+        self.stack.config.return_value=self.config;self.stack.call.return_value=b'test-only-id'
+        with patch('simple_update.run',return_value=json.dumps(items).encode()):
+            with self.assertRaises(RehearsalError):simple.healthy(self.stack)
+    def test_candidate_added_port_never_stops_source(self):
+        cfg=copy.deepcopy(self.config);cfg['services']['immich-server']['ports']=[{'target':2283,'published':'2283'}]
+        self.candidate.write_text(json.dumps(cfg))
+        with self.assertRaises(RehearsalError):self.apply()
+        self.stack.call.assert_not_called()
     def test_failed_target_retains_backup_and_blocks_repeat_without_downgrade(self):
         with self.assertRaises(RehearsalError):self.apply(fault=Mock(side_effect=RehearsalError('test-only failed check')))
         journal=json.loads((self.state/simple.JOURNAL).read_text())

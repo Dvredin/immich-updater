@@ -23,25 +23,38 @@ Short downtime and owner intervention after a failed update are an explicit trad
    match selection, with a strictly newer target. Check the existing runtime and
    space for a full **logical database** backup.
    There is no clone-memory gate or traversal/copy of the photo library.
-2. Resolve the selected release's official Compose template, retain supported site
-   settings/mounts, pull the explicit images while the old stack is still available,
+2. Resolve the selected release's official Compose template using neutral placeholders
+   and an explicit template environment, never real DB passwords or storage paths.
+   Copy already-resolved site settings/mounts, including named volumes and absent
+   port publication, pull the explicit images while the old stack is still available,
    and pin local image IDs. Recheck security before downtime.
-3. Record the actual old container images and privately save the original Compose
-   file and `.env`, including their ownership/modes.
+3. Require actual container bind/named-volume identities and read/write modes to
+   match the resolved configuration before stopping any writer. Record the actual old
+   images and privately save the original Compose file and `.env`, including metadata.
 4. Stop only the `immich-server` writer and verify that it stopped. Dump the complete
    PostgreSQL database in custom format, fsync it, verify `PGDMP` and parse its table
    of contents with the installed `pg_restore`. An incomplete/failed backup never
    authorizes target startup. PostgreSQL remains up for the dump.
-5. Write a durable mutation boundary, publish the pinned candidate and run normal
+5. Write a durable mutation boundary, publish the pinned candidate as a private
+   mode0600 file (it contains resolved environment values), and run normal
    `docker compose up -d --wait` for the same project. No second stack is started and
    production RAM, Node heap and database tuning are not reduced.
 6. Check all expected containers, health where defined, exact pinned image IDs,
    the selected server version and ping API. Persist `IMMICH_VERSION` only after
    those checks and retain a private update receipt/backup.
 
+Resolved Compose files escape literal `$` settings during materialization and
+decode Compose's escaped config output; passwords, Unicode and paths do not pass
+through a second interpolation layer. Creation of secret-containing temporary files
+is private from the first open, regardless of the original Compose's old permissions.
+
 If backup fails before migration, resume the unchanged old images when possible.
 If target startup or post-checks fail, retain the actual state and backup for owner
 inspection. The same candidate is not retried while its pending marker exists.
+Failures log safe stage, source location, operation, exit status and allowlisted
+error hints when available. They never publish raw stderr, full argv, credentials
+or resolved configuration. A failure before `apply` does not claim a nonexistent
+private update receipt. Migration-side failures retain boundary/diagnostic state.
 A failed check does not prove the website is down; the external monitor checks
 availability independently. A successful check is not full functional certification.
 

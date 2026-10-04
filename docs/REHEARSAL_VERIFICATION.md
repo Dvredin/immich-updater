@@ -21,6 +21,31 @@ three-failure threshold, durable pending delivery before send, retry cooldown,
 restart deduplication, recovery rearming and obsolete pending cancellation. A real
 local HTTP server exercises request/response parsing. No application restart exists.
 
+## Current hardening after independent review
+
+The first production attempt after installation failed with an opaque RehearsalError
+following a successful preflight. Its exact root cause remains unproven: no private
+owner configuration or raw Docker error was collected. Six source defects were
+accepted, reproduced and corrected; [repair decisions](UPDATE_HARDENING.md) separate
+compatibility failures, diagnostic loss and safety boundaries from that incident.
+
+The corrected30-file payload passes235 tests under root/Python3.12/umask0077,
+normal and simulated1000MiB memory. New native Compose parser regressions cover
+literal dollar/braces/quotes/Unicode, inherited version conflicts, named volumes,
+absent published ports and loopback-only mapping. Recording checks cover runtime
+mount drift, private runtime publication and diagnostics without a private canary.
+
+Fresh synthetic acceptance passed the actual3.1.0→3.2.4 migration with a deliberately
+special-character PostgreSQL setting, login, metadata/original preservation,
+destructive logical dump restoration, verified actual bind/named mounts, private
+published Compose and retained failed-update/retry-blocking state. All4container PID
+ancestries shared4GiB/swap0, peak2748407808bytes, OOM0; hostOS/controller outside.
+[Sanitized repaired-runtime evidence](single-stack-hardening-acceptance.json) includes
+runtime hashes. The repaired package is not yet installed on the owner's VM.
+A clean independent re-audit verdict is not claimed; the executor verified repairs.
+
+## Previous single-stack acceptance (historical revision)
+
 Fresh native-disk synthetic single-stack acceptance passed an actual populated
 `v3.1.0 → v3.2.4` update, password login, metadata/original preservation, destructive
 logical backup restoration, and injected post-migration failure. Backup/journal

@@ -166,6 +166,7 @@ def compose_file(directory, explicit):
 
 
 def run(args):
+    args.execution_stage='initial_preflight'
     directory = Path(args.immich_dir).resolve()
     state_dir = Path(args.state_dir).absolute() if args.state_dir else directory / '.immich-updater-state'
     from simple_update import apply, preflight, check_pending, require_upgrade
@@ -176,6 +177,7 @@ def run(args):
     if not args.dry_run:
         check_pending(compose_file(directory,args.compose_file),state_dir)
     as_of = stamp(args.as_of) if args.as_of else datetime.now(timezone.utc)
+    args.execution_stage='release_selection'
     current = current_version(args.server_url)
     quarantine_path = state_dir / 'quarantine.json'
     quarantine = json.loads(quarantine_path.read_text()) if quarantine_path.is_file() else {}
@@ -192,16 +194,22 @@ def run(args):
     if args.dry_run:
         return 0
     source_path = compose_file(directory,args.compose_file)
+    args.execution_stage='runtime_preflight'
     receipt = preflight(source_path,state_dir)
     require_upgrade(receipt['runtime']['version'],tag(current),selected)
     log('preflight', **receipt)
     from transaction import candidate_config
+    args.execution_stage='candidate_preparation'
+    log('stage',stage=args.execution_stage,target=selected,production_mutations=False)
     candidate = candidate_config(source_path,selected,state_dir/'candidates',rehearsal_capacity=False)
     # Re-read security immediately before downtime; pulls may have taken a while.
     refreshed=GitHub()
+    args.execution_stage='security_recheck'
     blocks,_=advisory_risks(refreshed,refreshed.pages('/security-advisories',limit=3),selected)
     if blocks:
         raise ValueError('Candidate acquired an unresolved/serious security advisory.')
+    args.execution_stage='single_stack_apply'
+    log('stage',stage=args.execution_stage,target=selected)
     apply(source_path,candidate,selected,tag(current),state_dir)
     return 0
 
@@ -242,8 +250,10 @@ def main():
         if isinstance(exc, SystemExit):
             raise
         # Never expose Docker stderr, resolved configuration or request credentials.
-        log('failure', error_type=type(exc).__name__, decision='fail_closed',
-            reason='Inspect private local receipts; external availability monitoring handles outage alerts.')
+        from simple_update import failure_details
+        details=failure_details(exc,getattr(args,'execution_stage','initialization'))
+        log('failure', error_type=type(exc).__name__, decision='fail_closed',**details,
+            reason='Safe stage/source/operation diagnostics are above; pending update receipts require owner inspection.')
         return 1
     finally:
         if lock_fd is not None:
